@@ -11,7 +11,7 @@
 (function () {
   // Wait until the page fully loaded
   window.addEventListener("load", function () {
-  	var findPlayVideoInterval = setInterval(generateLinksPanel, 1000);
+    var findPlayVideoInterval = setInterval(generateLinksPanel, 1000);
   });
 })();
 
@@ -21,6 +21,10 @@ function generateLinksPanel(){
 
     //check if the panel for all link is existed
     var videoLinksPanel = document.getElementById('pnlVidLk');
+    // check if the panel for all buttons is existed
+    var emptyText = document.getElementById('txtPromt');
+    //check if the panel for all buttons is existed
+    var buttonLinksPanel = document.getElementById('pnlButLk');
     if(videoLinksPanel == null){
         //create a new panel for all links
         videoLinksPanel = document.createElement("div");
@@ -35,36 +39,61 @@ function generateLinksPanel(){
         videoLinksPanel.style.backgroundColor = "yellow";
          // Add the panel to the DOM
         document.body.appendChild(videoLinksPanel);
- 	}else{
- 		//Action for link panel
+  }else{
+    //Action for link panel
     }
-
+    if(emptyText == null){
+        //create a promt text
+        emptyText = document.createElement("p");
+        emptyText.id = "txtPromt";
+        //Add promt text to the link panel
+        emptyText.innerHTML = "Searching for videos...";
+        videoLinksPanel.appendChild(emptyText);
+    }else{
+    //Action for link panel
+    }
+    if(buttonLinksPanel == null){
+        //create a new panel for all links
+        buttonLinksPanel = document.createElement("div");
+        buttonLinksPanel.name = "pnlButtonLinks";
+        buttonLinksPanel.id = "pnlButLk";
+        buttonLinksPanel.style.position = "fixed";
+        buttonLinksPanel.style.width = "fit-content";
+        buttonLinksPanel.style.height = "fit-content";
+        buttonLinksPanel.style.zIndex = "5000";
+        buttonLinksPanel.style.backgroundColor = "yellow";
+         // Add the panel to the DOM
+        videoLinksPanel.appendChild(buttonLinksPanel);
+  }else{
+    //Action for link panel
+    }
     if (playButton) {
         console.log("Play Video found!");
+        emptyText.innerHTML = "Play Video found!";
         //remove all old elements
-        if(videoLinksPanel != null){
-	     	removeAllChildNodes(videoLinksPanel);
-	    }else{
-	    	//Action for link panel
-	    }
-	    //Append URL to button
-	    appendURL(videoLinksPanel);
+        if(buttonLinksPanel != null){
+        removeAllChildNodes(buttonLinksPanel);
+      }else{
+        //Action for link panel
+      }
+      //Append URL to button
+      appendURL(buttonLinksPanel);
     }else{
-  		console.log("No Play Video found!!!");
-  		if(videoLinksPanel != null){
-	     	removeAllChildNodes(videoLinksPanel);
-     		let emptyText = document.createElement("p");
-     		emptyText.innerHTML = "No link available";
-     		videoLinksPanel.appendChild(emptyText);
- 		}else{
- 			//Action for link panel
- 		}
+      console.log("No Play Video found!!!");
+        emptyText.innerHTML = "No Play Video found!!!";
+      if(buttonLinksPanel != null){
+        removeAllChildNodes(buttonLinksPanel);
+    }else{
+      //Action for link panel
+    }
     }
 }
 
 function appendURL(videoLinksPanel){
     // Get the page source of the current page
     let pageSource = document.documentElement.outerHTML;
+    //get the promt text
+    let prmText = document.getElementById('txtPromt');
     // Use regex to find string between "playable_url_quality_hd":" and ","spherical_video_fallback_urls"
     let regex =
       /playable_url_quality_hd":"(.*?)","spherical_video_fallback_urls/g; //don't forget "g" param to avoid infinite loop
@@ -72,6 +101,7 @@ function appendURL(videoLinksPanel){
     let buttonCounter = 0;
     while(result = regex.exec(pageSource)) {
         // Do something with result[0].
+        prmText.innerHTML = "HD video found. Link added";
         let videoLink = result[1];
         buttonCounter++;
         console.log("Current counter: " + buttonCounter);
@@ -79,11 +109,13 @@ function appendURL(videoLinksPanel){
         generateLinkButtons(videoLinksPanel, buttonCounter, videoLink)
     }
     if (result == null){
-      	console.log("No HD video found. Running another check...");
+        console.log("No HD video found. Running another check...");
+      prmText.innerHTML = "No HD video found. Running another check...";
         let regex = /playable_url":"(.*?)","playable_url_quality_hd/g; //don't forget "g" param to avoid infinite loop
         buttonCounter = 0;
         while(result = regex.exec(pageSource)) {
             // Do something with result[0].
+            prmText.innerHTML = "SD video found. Link added";
             let videoLink = result[1];
             buttonCounter++;
             console.log("Current counter: " + buttonCounter);
@@ -91,7 +123,8 @@ function appendURL(videoLinksPanel){
             generateLinkButtons(videoLinksPanel, buttonCounter, videoLink)
         }
     }else{
-      	console.log("HD video found. Link added");
+        console.log("HD video found. Link added");
+        prmText.innerHTML = "HD video found. Link added";
     }
 }
 
@@ -99,30 +132,30 @@ function generateLinkButtons(videoLinksPanel, buttonCounter, videoLink){
     //check if the get link button is existed
     var getLinksButton = document.getElementById('dwnVidBtn'+buttonCounter);
     if(getLinksButton == null){
-      	// Create a new button
-     	getLinksButton = document.createElement("button");
+        // Create a new button
+      getLinksButton = document.createElement("button");
 
-     	getLinksButton.innerHTML = "Get Video Link "+ buttonCounter;
-     	 // Resize the button
-      	getLinksButton.name = "downVidBtn";
-      	getLinksButton.id = "dwnVidBtn"+buttonCounter;
-      	getLinksButton.style.position = "fixed";
-      	getLinksButton.style.fontSize = "16px";
+      getLinksButton.innerHTML = "Get Video Link "+ buttonCounter;
+       // Resize the button
+        getLinksButton.name = "downVidBtn";
+        getLinksButton.id = "dwnVidBtn"+buttonCounter;
+        getLinksButton.style.position = "fixed";
+        getLinksButton.style.fontSize = "16px";
         getLinksButton.style.backgroundColor = "green";
         getLinksButton.style.color = "white";
         getLinksButton.style.fontStyle = "bold";
         //Add the button to the panel
         videoLinksPanel.appendChild(getLinksButton);
-        videoLinksPanel.appendChild(document.createElement("p")); //adding linebreak to avoid buttons to overlap each other
+        videoLinksPanel.appendChild(document.createElement("br")); //adding linebreak to avoid buttons to overlap each other
         videoLinksPanel.appendChild(document.createElement("br")); //adding linebreak to avoid buttons to overlap each other
     }
     //update the link for reference
     getLinksButton.setAttribute('link',videoLink);
     // Click on the button will trigger the function
     getLinksButton.addEventListener("click", function () {
-    	console.log("Get Video Link button clicked");
-    	let vidLink = extractURL(this.getAttribute('link'));
-	});
+      console.log("Get Video Link button clicked");
+      let vidLink = extractURL(this.getAttribute('link'));
+  });
 }
 
 /**
@@ -140,7 +173,7 @@ function generateLinkButtons(videoLinksPanel, buttonCounter, videoLink){
 }
 
 function removeAllChildNodes(parentNode){
-	while (parentNode.firstChild) {
-		parentNode.removeChild(parentNode.lastChild);
-	}
+  while (parentNode.firstChild) {
+    parentNode.removeChild(parentNode.lastChild);
+  }
 }

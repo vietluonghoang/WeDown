@@ -1,10 +1,10 @@
 // Tamper Monkey Script
 // ==UserScript==
-// @name         Get Video Link Test
+// @name         Get Facebook Video Link
 // @namespace    http://tampermonkey.net/
 // @version      0.1.1
 // @description  Simply get the downloadable video facebooklink from the page source
-// @author       HoangNB
+// @author       Viet Cat
 // @match        https://www.facebook.com/*
 // @grant        none
 // ==/UserScript==

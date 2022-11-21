@@ -17,7 +17,7 @@
 
 function generateLinksPanel(){
     // Find a div with aria-label="Play Video"
-    var playButton = document.querySelector('div[aria-label="Play Video"]');
+    var playButton = document.querySelector('video[playsinline]');
 
     //check if the panel for all link is existed
     var videoLinksPanel = document.getElementById('pnlVidLk');

@@ -2,7 +2,7 @@
 // ==UserScript==
 // @name         Get Facebook Video Link
 // @namespace    http://tampermonkey.net/
-// @version      0.1.1
+// @version      0.1.2
 // @description  Simply get the downloadable video facebooklink from the page source
 // @author       Viet Cat
 // @match        https://www.facebook.com/*

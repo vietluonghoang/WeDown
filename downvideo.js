@@ -168,7 +168,8 @@ function appendURL(){
     }
 
     if(rawVideoLinks.length > 1){
-        clearInterval(findPlayVideoInterval);
+        //clearInterval(findPlayVideoInterval);
+        appendLogText("Finished checking!!!");
     }
 }
 

@@ -139,6 +139,7 @@ function appendURL(){
     appendLogText("Run a check for HD.....");
     // Get the page source of the current page
     let pageSource = document.documentElement.outerHTML;
+    console.log("Page Source:\n" + pageSource);
     // Use regex to find string between "playable_url_quality_hd":" and ","spherical_video_fallback_urls"
     let regex =
       /playable_url_quality_hd":"(.*?)","spherical_video_fallback_urls/g; //don't forget "g" param to avoid infinite loop

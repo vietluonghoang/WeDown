@@ -67,10 +67,12 @@ function putComment(){
         console.log("--- comment boxes available: " + commentBoxes.snapshotLength);
         scrollToElement(commentBoxes.snapshotItem(counter));
         console.log(commentBoxes.snapshotItem(counter));
-        commentBoxes.snapshotItem(counter).click();
-        commentBoxes.snapshotItem(counter).focus();
         setTimeout(() => {
-            simulateKeyPress(commentBoxes.snapshotItem(counter),"c");
+            commentBoxes.snapshotItem(counter).click();
+            commentBoxes.snapshotItem(counter).focus();
+            setTimeout(() => {
+                simulateKeyPress(commentBoxes.snapshotItem(counter),"c");
+            }, 2000);
         }, 2000);
     }, 2000);
 
@@ -100,7 +102,12 @@ function putComment(){
 function simulateKeyPress(input, key) {
     if(input != null && key != null){
         console.log("---- sending key event now: " + key);
-        input.addEventListener('keydown', () => { console.log('test')})
+        input.dispatchEvent(new KeyboardEvent('keydown', {
+            bubbles: true, cancelable: true, keyCode: 65
+        }));
+        input.dispatchEvent(new KeyboardEvent('keydown', {
+            key: "b"
+        }));
         input.dispatchEvent(new KeyboardEvent('keydown', { key }));
         input.dispatchEvent(new KeyboardEvent('keydown', {
             key: "b",

@@ -2,7 +2,7 @@
 // ==UserScript==
 // @name         Get Facebook Video Link
 // @namespace    http://tampermonkey.net/
-// @version      0.1.3
+// @version      0.1.4
 // @description  Simply get the downloadable video facebooklink from the page source
 // @author       Viet Cat
 // @match        https://www.facebook.com/*
@@ -142,7 +142,7 @@ function appendURL(){
     console.log("Page Source:\n" + pageSource);
     // Use regex to find string between "playable_url_quality_hd":" and ","spherical_video_fallback_urls"
     let regex =
-      /playable_url_quality_hd":"(.*?)","spherical_video_fallback_urls/g; //don't forget "g" param to avoid infinite loop
+      /browser_native_hd_url":"(.*?)","spherical_video_fallback_urls/g; //don't forget "g" param to avoid infinite loop
     let result;
     let buttonCounter = 0;
     while(result = regex.exec(pageSource)) {
@@ -156,7 +156,7 @@ function appendURL(){
         generateLinkButtons("HD", videoLinksPanel, buttonCounter, videoLink);
     }
     appendLogText("Running another check for SD...");
-    regex = /playable_url":"(.*?)","playable_url_quality_hd/g; //don't forget "g" param to avoid infinite loop
+    regex = /browser_native_sd_url":"(.*?)","playable_url_quality_hd/g; //don't forget "g" param to avoid infinite loop
     while(result = regex.exec(pageSource)) {
         // Do something with result[0].
         appendLogText("SD video found. Link added");

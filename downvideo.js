@@ -2,7 +2,7 @@
 // ==UserScript==
 // @name         Get Facebook Video Link
 // @namespace    http://tampermonkey.net/
-// @version      0.1.4
+// @version      0.1.5
 // @description  Simply get the downloadable video facebooklink from the page source
 // @author       Viet Cat
 // @match        https://www.facebook.com/*
@@ -156,7 +156,7 @@ function appendURL(){
         generateLinkButtons("HD", videoLinksPanel, buttonCounter, videoLink);
     }
     appendLogText("Running another check for SD...");
-    regex = /browser_native_sd_url":"(.*?)","playable_url_quality_hd/g; //don't forget "g" param to avoid infinite loop
+    regex = /browser_native_sd_url":"(.*?)","browser_native_hd_url/g; //don't forget "g" param to avoid infinite loop
     while(result = regex.exec(pageSource)) {
         // Do something with result[0].
         appendLogText("SD video found. Link added");

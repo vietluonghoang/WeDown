@@ -2,7 +2,7 @@
 // ==UserScript==
 // @name         Get Facebook Video Link
 // @namespace    http://tampermonkey.net/
-// @version      0.1.5
+// @version      0.1.6
 // @description  Simply get the downloadable video facebooklink from the page source
 // @author       Viet Cat
 // @match        https://www.facebook.com/*
@@ -13,7 +13,7 @@ var findPlayVideoInterval;
 var videoDownloadPanel;
 var videoLinksPanel;
 var infoPanel;
-var rawVideoLinks = [];
+var rawVideoLinks = new Map();
 var hasStarted = false;
 let topOffset;
 let leftOffset;
@@ -24,17 +24,18 @@ let infoPanelID = "pnlInfo";
 (function () {
   // Wait until the page fully loaded
   window.addEventListener("load", function () {
+    appendLogText("------------\npage loaded....\n------------");
     findPlayVideoInterval = setInterval(checkForLinks, 2000);
   });
 })();
 
 function checkForLinks(){
-    appendLogText("scanning....");
+    appendLogText("------------\nscanning....\n------------");
     if(!hasStarted){
         hasStarted = true;
         initComponents();
         appendLogText("Remove all links...");
-        rawVideoLinks = [];
+        rawVideoLinks = new Map();
         appendURL();
         hasStarted = false;
     }else{
@@ -43,7 +44,7 @@ function checkForLinks(){
 }
 
 function generateVideoLinksPanel(){
-    appendLogText("Generating Video Links panel...");
+    appendLogText("------------\nGenerating Video Links panel...\n------------");
     //create a new panel for all links
     videoLinksPanel = document.createElement("div");
     videoLinksPanel.name = videoLinksPanelId;
@@ -63,7 +64,7 @@ function generateVideoLinksPanel(){
 }
 
 function generateInfoPanel(){
-    appendLogText("Generating Info panel...");
+    appendLogText("------------\mGenerating Info panel...\n------------");
     //create a new panel for info
     infoPanel = document.createElement("textarea");
     infoPanel.name = infoPanelID;
@@ -82,7 +83,7 @@ function generateInfoPanel(){
 }
 
 function generateVideoDownloadPanel(){
-    appendLogText("Generating Video Download panel...");
+    appendLogText("------------\nGenerating Video Download panel...\n------------");
     //create a new panel for video download
     videoDownloadPanel = document.createElement("div");
     videoDownloadPanel.name = videoDownloadPanelId;
@@ -135,74 +136,120 @@ function initComponents(){
 }
 
 function appendURL(){
-    appendLogText("Start scanning for links.....");
-    appendLogText("Run a check for HD.....");
+    appendLogText("------------\nStart scanning for links.....\n------------");
+    appendLogText("------------\nRun a check for HD.....\n------------");
     // Get the page source of the current page
     let pageSource = document.documentElement.outerHTML;
-    console.log("Page Source:\n" + pageSource);
-    // Use regex to find string between "playable_url_quality_hd":" and ","spherical_video_fallback_urls"
+    // appendLogText("Page Source:\n" + pageSource);
+    // Use regex to find string between "progressive_url":" and ","failure_reason":
     let regex =
-      /browser_native_hd_url":"(.*?)","spherical_video_fallback_urls/g; //don't forget "g" param to avoid infinite loop
+      /,{"progressive_url":"(.*?)","failure_reason":(.*?),"metadata":{"quality":"HD"}/g; //don't forget "g" param to avoid infinite loop
     let result;
-    let buttonCounter = 0;
     while(result = regex.exec(pageSource)) {
         // Do something with result[0].
-        appendLogText("HD video found. Link added");
+        appendLogText("===== HD video found. Link added");
         let videoLink = result[1];
-        buttonCounter++;
-        appendLogText("Current counter: " + buttonCounter + "\n\tResult found : "+ videoLink + " \nat index: " + result.index);
-        rawVideoLinks.push(videoLink);
-        //Create the link to the raw video
-        generateLinkButtons("HD", videoLinksPanel, buttonCounter, videoLink);
+        appendLogText("Result found : "+ videoLink + " \n\tat index: " + result.index);
+        rawVideoLinks.set(videoLink, "HD");
     }
-    appendLogText("Running another check for SD...");
-    regex = /browser_native_sd_url":"(.*?)","browser_native_hd_url/g; //don't forget "g" param to avoid infinite loop
+    appendLogText("------------\nRunning another check for SD...\n------------");
+    regex = /\[{"progressive_url":"(.*?)","failure_reason":(.*?),"metadata":{"quality":"SD"}/g; //don't forget "g" param to avoid infinite loop
     while(result = regex.exec(pageSource)) {
         // Do something with result[0].
-        appendLogText("SD video found. Link added");
+        appendLogText("===== SD video found. Link added");
         let videoLink = result[1];
-        buttonCounter++;
-        appendLogText("Current counter: " + buttonCounter + "\n\tResult found : "+ videoLink + " \nat index: " + result.index);
-        rawVideoLinks.push(videoLink);
-        //Create the link to the raw video
-        generateLinkButtons("SD", videoLinksPanel, buttonCounter, videoLink);
+        appendLogText("Result found : "+ videoLink + " \n\tat index: " + result.index);
+        rawVideoLinks.set(videoLink, "SD");
     }
 
-    if(rawVideoLinks.length > 1){
+    appendLogText("------------\nRunning another check for different resolutions...\n------------");
+    regex = /(?<="base_url":)(.*?)(\])/g; //don't forget "g" param to avoid infinite loop
+    let resolutionCounter = 0;
+    while(result = regex.exec(pageSource)) {
+        // Do something with result[0].
+        resolutionCounter++;
+        let basedUrl = result[1] + "";
+        appendLogText("===== [" + resolutionCounter + "] base url found....\n" + basedUrl);
+        let res;
+        let videoLink = "";
+        let videowidth = 0;
+        let videoheight = 0;
+
+        //extract url
+        appendLogText("--- Extracting url....");
+        let regexExtract = /(?<=")(.*?)","bandwidth/g;
+        while(res = regexExtract.exec(basedUrl)) {
+            videoLink = res[1];
+            appendLogText("video url found...." + videoLink);
+        }
+
+        //extract width
+        appendLogText("--- Extracting width....");
+        regexExtract = /(?<="width":)(.*?),"playback_resolution_mos/g;
+        while(res = regexExtract.exec(basedUrl)) {
+            videowidth = res[1];
+            appendLogText("video width found...." + videowidth);
+        }
+
+        //extract height
+        appendLogText("--- Extracting height....");
+        regexExtract = /(?<="height":)(.*?),"width"/g;
+        while(res = regexExtract.exec(basedUrl)) {
+            videoheight = res[1];
+            appendLogText("video height found...." + videoheight);
+        }
+
+        let videoresolution = videoheight + "x" + videowidth;
+        appendLogText("- Video resolution: " + videoresolution);
+        appendLogText("Result found : "+ videoLink + " \n\tat index: " + result.index);
+        rawVideoLinks.set(videoLink, videoresolution);
+        //Create the link to the raw video
+        // generateLinkButtons(videoresolution, videoLinksPanel, buttonCounter, videoLink);
+    }
+
+    if(rawVideoLinks.size > 1){
         //clearInterval(findPlayVideoInterval);
         appendLogText("Finished checking!!!");
+        generateLinkButtons();
     }
 }
 
-function generateLinkButtons(quality, videoLinksPanel, buttonCounter, videoLink){
-    appendLogText(quality + " Generating link " + buttonCounter + ": " + videoLink);
-    //check if the get link button is existed
-    var getLinksButton = document.getElementById('dwnVidBtn'+buttonCounter);
-    if(getLinksButton == null){
-        // Create a new button
-        getLinksButton = document.createElement("button");
+function generateLinkButtons(){
+    let buttonCounter = 0;
+    appendLogText("Total number of buttons: " + rawVideoLinks.size);
 
-        getLinksButton.innerHTML = quality + " - Get Video Link "+ buttonCounter;
-        // Resize the button
-        getLinksButton.name = "downVidBtn";
-        getLinksButton.id = "dwnVidBtn"+buttonCounter;
-        getLinksButton.style.position = "relative";
-        getLinksButton.style.fontSize = "16px";
-        getLinksButton.style.backgroundColor = "green";
-        getLinksButton.style.color = "white";
-        getLinksButton.style.fontStyle = "bold";
-        //Add the button to the panel
-        videoLinksPanel.appendChild(getLinksButton);
-        //videoLinksPanel.appendChild(document.createElement("br")); //adding linebreak to avoid buttons to overlap each other
-        //videoLinksPanel.appendChild(document.createElement("br")); //adding linebreak to avoid buttons to overlap each other
+    for (let [videoLink, quality] of rawVideoLinks) {
+        buttonCounter++;
+        appendLogText("Generating button: \n[" + buttonCounter + "] " + quality + ": " + videoLink);
+        
+        //check if the get link button is existed
+        var getLinksButton = document.getElementById('dwnVidBtn'+buttonCounter);
+        if(getLinksButton == null){
+            // Create a new button
+            getLinksButton = document.createElement("button");
+
+            getLinksButton.innerHTML = quality + " - Get Video Link "+ buttonCounter;
+            // Resize the button
+            getLinksButton.name = "downVidBtn";
+            getLinksButton.id = "dwnVidBtn" + buttonCounter;
+            getLinksButton.style.position = "relative";
+            getLinksButton.style.fontSize = "16px";
+            getLinksButton.style.backgroundColor = "green";
+            getLinksButton.style.color = "white";
+            getLinksButton.style.fontStyle = "bold";
+            //Add the button to the panel
+            videoLinksPanel.appendChild(getLinksButton);
+            //videoLinksPanel.appendChild(document.createElement("br")); //adding linebreak to avoid buttons to overlap each other
+            //videoLinksPanel.appendChild(document.createElement("br")); //adding linebreak to avoid buttons to overlap each other
+        }
+        //update the link for reference
+        getLinksButton.setAttribute('link',videoLink);
+        // Click on the button will trigger the function
+        getLinksButton.addEventListener("click", function () {
+          appendLogText("Get Video Link button clicked");
+          let vidLink = extractURL(this.getAttribute('link'));
+        });
     }
-    //update the link for reference
-    getLinksButton.setAttribute('link',videoLink);
-    // Click on the button will trigger the function
-    getLinksButton.addEventListener("click", function () {
-      appendLogText("Get Video Link button clicked");
-      let vidLink = extractURL(this.getAttribute('link'));
-  });
 }
 
 /**

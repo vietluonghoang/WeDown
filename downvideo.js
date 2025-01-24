@@ -36,6 +36,12 @@ const VIDEO_PATTERNS = {
     RESOLUTION: /(?<="base_url":)(.*?)(\])/g
 };
 
+// Add to the top with other constants
+const INTERVALS = {
+    DEFAULT: 2000,  // 2 seconds
+    AFTER_FOUND: 30000  // 30 seconds
+};
+
 function cleanup() {
     if (findPlayVideoInterval) {
         clearInterval(findPlayVideoInterval);
@@ -75,11 +81,12 @@ function cleanup() {
 
 function initializeScript() {
     appendLogText("------------\npage loaded....\n------------");
-    // Clear any existing interval to avoid duplicates
     if (findPlayVideoInterval) {
         clearInterval(findPlayVideoInterval);
     }
-    findPlayVideoInterval = setInterval(checkForLinks, 2000);
+    
+    const interval = rawVideoLinks.size > 0 ? INTERVALS.AFTER_FOUND : INTERVALS.DEFAULT;
+    findPlayVideoInterval = setInterval(checkForLinks, interval);
 }
 
 function checkForLinks(){
@@ -103,41 +110,53 @@ function generateVideoLinksPanel(){
     videoLinksPanel.name = videoLinksPanelId;
     videoLinksPanel.id = videoLinksPanelId;
     videoLinksPanel.style.width = 'fit-content';
-    videoLinksPanel.style.height = 'fit-content';
     videoLinksPanel.style.position = 'relative';
     videoLinksPanel.style.margin = '10px 0px';
     videoLinksPanel.style.zIndex = '5000';
     videoLinksPanel.style.display = 'flex';
     videoLinksPanel.style.flexDirection = 'column';
     videoLinksPanel.style.alignItems = 'center';
-    videoLinksPanel.style.backgroundColor = 'yellow';
+    videoLinksPanel.style.backgroundColor = '#ffffff';
+    videoLinksPanel.style.padding = '10px';
 
-    // Add the links panel to the download panel
-    videoDownloadPanel.appendChild(videoLinksPanel);
+    // Add the links panel to the content container
+    const contentContainer = videoDownloadPanel.querySelector('div:nth-child(2)');
+    if (contentContainer) {
+        contentContainer.appendChild(videoLinksPanel);
+    }
 }
 
 function generateInfoPanel(){
-    appendLogText("------------\mGenerating Info panel...\n------------");
+    appendLogText("------------\nGenerating Info panel...\n------------");
     //create a new panel for info
     infoPanel = document.createElement("textarea");
     infoPanel.name = infoPanelID;
     infoPanel.id = infoPanelID;
-    infoPanel.style.width = "fit-content";
-    infoPanel.style.height = "fit-content";
+    infoPanel.style.width = "calc(100% - 20px)"; // Account for padding
+    infoPanel.style.height = "100px";
     infoPanel.style.position = 'relative';
-    infoPanel.style.margin = '10px 0px';
+    infoPanel.style.margin = '10px';
     infoPanel.rows = 4;
-    infoPanel.cols = 30;
     infoPanel.style.zIndex = "5000";
-    infoPanel.style.backgroundColor = "green";
+    infoPanel.style.backgroundColor = "#f5f5f5";
+    infoPanel.style.border = "1px solid #ddd";
+    infoPanel.style.borderRadius = "4px";
+    infoPanel.style.padding = "8px";
+    infoPanel.style.fontSize = "12px";
+    infoPanel.style.fontFamily = "monospace";
+    infoPanel.style.resize = "vertical";
 
-    // Add the links panel to the download panel
-    videoDownloadPanel.appendChild(infoPanel);
+    // Add the info panel to the content container
+    const contentContainer = videoDownloadPanel.querySelector('div:nth-child(2)');
+    if (contentContainer) {
+        contentContainer.appendChild(infoPanel);
+    }
 }
 
 function generateVideoDownloadPanel(){
     appendLogText("------------\nGenerating Video Download panel...\n------------");
-    //create a new panel for video download
+    
+    // Create panel
     videoDownloadPanel = document.createElement("div");
     videoDownloadPanel.name = videoDownloadPanelId;
     videoDownloadPanel.id = videoDownloadPanelId;
@@ -146,20 +165,172 @@ function generateVideoDownloadPanel(){
     videoDownloadPanel.style.position = "fixed";
     videoDownloadPanel.style.margin = "10px 0px";
     videoDownloadPanel.style.width = "fit-content";
-    videoDownloadPanel.style.height = "fit-content";
-    videoDownloadPanel.style.zIndex = "5000";
+    videoDownloadPanel.style.maxHeight = "90vh"; // Limit height to 90% of viewport height
     videoDownloadPanel.style.display = "flex";
     videoDownloadPanel.style.flexDirection = "column";
     videoDownloadPanel.style.alignItems = 'center';
-    // Add the panel to the DOM
+    videoDownloadPanel.style.zIndex = "5000";
+    videoDownloadPanel.style.backgroundColor = "#ffffff"; // Add background color
+    videoDownloadPanel.style.boxShadow = "0 2px 10px rgba(0,0,0,0.1)"; // Add shadow for better visibility
+    
+    // Add header bar
+    const headerBar = createHeaderBar();
+    videoDownloadPanel.appendChild(headerBar);
+    
+    // Create scrollable content container
+    const contentContainer = document.createElement("div");
+    contentContainer.style.width = "100%";
+    contentContainer.style.flex = "1";
+    contentContainer.style.overflowY = "auto";
+    contentContainer.style.overflowX = "hidden";
+    contentContainer.style.maxHeight = "calc(90vh - 50px)"; // Subtract header height
+    contentContainer.style.scrollbarWidth = "thin"; // For Firefox
+    contentContainer.style.scrollbarColor = "#888 #f1f1f1"; // For Firefox
+    
+    // Add custom scrollbar styles for WebKit browsers
+    contentContainer.style.cssText += `
+        &::-webkit-scrollbar {
+            width: 8px;
+        }
+        &::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        &::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+        &::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    `;
+    
+    videoDownloadPanel.appendChild(contentContainer);
+    
+    // Add to DOM
     document.body.appendChild(videoDownloadPanel);
 
-    // Set the initial position of the floating div
+    // Set initial position
     topOffset = videoDownloadPanel.offsetTop;
     leftOffset = videoDownloadPanel.offsetLeft;
-    // Call the updateFloatingTablePosition function on page load and scroll events
     window.addEventListener('load', updateFloatingTablePosition);
     window.addEventListener('scroll', updateFloatingTablePosition);
+    
+    return contentContainer; // Return the content container for other functions to use
+}
+
+function createHeaderBar() {
+    const headerBar = document.createElement('div');
+    headerBar.style.width = '100%';
+    headerBar.style.padding = '10px';
+    headerBar.style.backgroundColor = '#f0f0f0';
+    headerBar.style.borderBottom = '1px solid #ddd';
+    headerBar.style.display = 'flex';
+    headerBar.style.alignItems = 'center';
+    headerBar.style.justifyContent = 'space-between';
+    headerBar.style.borderRadius = '4px 4px 0 0';
+
+    const title = document.createElement('span');
+    title.textContent = 'Facebook Video Downloader';
+    title.style.fontWeight = 'bold';
+
+    const searchControl = createSearchControl();
+    
+    headerBar.appendChild(title);
+    headerBar.appendChild(searchControl);
+    
+    return headerBar;
+}
+
+function createSearchControl() {
+    const container = document.createElement('div');
+    container.style.display = 'flex';
+    container.style.alignItems = 'center';
+    container.style.gap = '10px';
+
+    const button = document.createElement('button');
+    button.id = 'searchControlBtn';
+    button.style.padding = '5px 10px';
+    button.style.borderRadius = '4px';
+    button.style.border = 'none';
+    button.style.cursor = 'pointer';
+    button.style.backgroundColor = '#4CAF50';
+    button.style.color = 'white';
+
+    const countdownText = document.createElement('span');
+    countdownText.id = 'searchCountdown';
+    
+    container.appendChild(button);
+    container.appendChild(countdownText);
+
+    let countdown = INTERVALS.DEFAULT / 1000;
+    let countdownInterval;
+    
+    function updateButtonState(isSearching) {
+        if (isSearching) {
+            button.textContent = 'Stop';
+            button.style.backgroundColor = '#f44336';
+            updateCountdown();
+        } else {
+            button.textContent = 'Search now';
+            button.style.backgroundColor = '#4CAF50';
+            countdownText.textContent = '';
+            if (countdownInterval) {
+                clearInterval(countdownInterval);
+            }
+        }
+    }
+
+    function updateCountdown() {
+        countdown = findPlayVideoInterval ? 
+            (rawVideoLinks.size > 0 ? INTERVALS.AFTER_FOUND : INTERVALS.DEFAULT) / 1000 : 
+            INTERVALS.DEFAULT / 1000;
+            
+        function tick() {
+            countdown--;
+            countdownText.textContent = `Searching in ${countdown}s...`;
+            if (countdown <= 0) {
+                countdown = findPlayVideoInterval ? 
+                    (rawVideoLinks.size > 0 ? INTERVALS.AFTER_FOUND : INTERVALS.DEFAULT) / 1000 : 
+                    INTERVALS.DEFAULT / 1000;
+            }
+        }
+
+        if (countdownInterval) {
+            clearInterval(countdownInterval);
+        }
+        countdownText.textContent = `Searching in ${countdown}s...`;
+        countdownInterval = setInterval(tick, 1000);
+    }
+
+    button.addEventListener('click', () => {
+        if (findPlayVideoInterval) {
+            // Stop searching
+            clearInterval(findPlayVideoInterval);
+            findPlayVideoInterval = null;
+            updateButtonState(false);
+        } else {
+            // Clear existing links
+            rawVideoLinks.clear();
+            
+            // Remove existing video elements
+            const videoLinksPanel = document.getElementById(videoLinksPanelId);
+            if (videoLinksPanel) {
+                removeAllChildNodes(videoLinksPanel);
+            }
+            
+            // Perform immediate search
+            checkForLinks();
+            
+            // Start interval with default timing
+            findPlayVideoInterval = setInterval(checkForLinks, INTERVALS.DEFAULT);
+            updateButtonState(true);
+        }
+    });
+
+    // Initial state
+    updateButtonState(!!findPlayVideoInterval);
+    
+    return container;
 }
 
 function initComponents(){
@@ -168,23 +339,27 @@ function initComponents(){
     if(videoDownloadPanel == null){
         generateVideoDownloadPanel();
     }else{
-        removeAllChildNodes(videoDownloadPanel);
+        // Keep the header bar and only remove video links panel and info panel
+        const videoLinksPanel = document.getElementById(videoLinksPanelId);
+        if (videoLinksPanel) {
+            videoLinksPanel.remove();
+        }
+        const infoPanel = document.getElementById(infoPanelID);
+        if (infoPanel) {
+            infoPanel.remove();
+        }
     }
 
     //check if the panel for all link is existed
     videoLinksPanel = document.getElementById(videoLinksPanelId);
     if(videoLinksPanel == null){
         generateVideoLinksPanel();
-    }else{
-        removeAllChildNodes(videoLinksPanel);
     }
 
     //check if the panel for info is existed
     infoPanel = document.getElementById(infoPanelID);
     if(infoPanel == null){
         generateInfoPanel();
-    }else{
-        removeAllChildNodes(infoPanel);
     }
 }
 
@@ -192,6 +367,7 @@ function appendURL() {
     try {
         appendLogText("Starting video link scan", 'info');
         const pageSource = document.documentElement.outerHTML;
+        const previousLinksCount = rawVideoLinks.size;
         let foundLinks = false;
 
         // Debug log to check page source
@@ -270,6 +446,18 @@ function appendURL() {
             appendLogText(`Found ${rawVideoLinks.size} video links`, 'info');
             generateLinkButtons();
         }
+
+        // After scanning, update interval if links were found
+        if (rawVideoLinks.size > previousLinksCount) {
+            clearInterval(findPlayVideoInterval);
+            findPlayVideoInterval = setInterval(checkForLinks, INTERVALS.AFTER_FOUND);
+            
+            // Update countdown display
+            const countdownText = document.getElementById('searchCountdown');
+            if (countdownText) {
+                countdownText.textContent = `Searching in ${INTERVALS.AFTER_FOUND / 1000}s...`;
+            }
+        }
     } catch (error) {
         appendLogText(`Failed to process video links: ${error.message}`, 'error');
     }
@@ -306,7 +494,7 @@ function generateLinkButtons() {
     for (let [videoLink, quality] of rawVideoLinks) {
         buttonCounter++;
         
-        // Create container for button and thumbnail
+        // Create container for video player and buttons
         const container = document.createElement('div');
         container.style.display = 'flex';
         container.style.alignItems = 'center';
@@ -314,22 +502,73 @@ function generateLinkButtons() {
         container.style.padding = '5px';
         container.style.backgroundColor = '#f0f0f0';
         container.style.borderRadius = '5px';
+        container.style.width = 'fit-content';
 
-        // Create thumbnail if available
-        const thumbnail = document.createElement('div');
-        thumbnail.style.width = '120px';
-        thumbnail.style.height = '67px';
-        thumbnail.style.marginRight = '10px';
-        thumbnail.style.backgroundColor = '#ddd';
-        thumbnail.style.backgroundSize = 'cover';
-        thumbnail.style.backgroundPosition = 'center';
-        
-        // Try to get video thumbnail
-        fetchVideoThumbnail(videoLink).then(thumbnailUrl => {
-            if (thumbnailUrl) {
-                thumbnail.style.backgroundImage = `url(${thumbnailUrl})`;
+        // Create video player
+        const videoContainer = document.createElement('div');
+        videoContainer.style.height = '100px'; // Fixed height
+        videoContainer.style.marginRight = '10px';
+        videoContainer.style.position = 'relative';
+        videoContainer.style.overflow = 'hidden';
+
+        const video = document.createElement('video');
+        video.style.height = '100%';
+        video.style.objectFit = 'contain'; // Changed from 'cover' to 'contain'
+        video.style.borderRadius = '4px';
+        video.style.backgroundColor = '#000'; // Add background for letterboxing
+        video.controls = true;
+        video.preload = 'metadata';
+        video.muted = true;
+
+        // Add event listener to adjust container width based on video metadata
+        video.addEventListener('loadedmetadata', () => {
+            const aspectRatio = video.videoWidth / video.videoHeight;
+            const containerWidth = Math.round(100 * aspectRatio); // Calculate width based on 100px height
+            videoContainer.style.width = `${containerWidth}px`;
+        });
+
+        // Clean the video URL
+        const cleanedUrl = cleanVideoUrl(videoLink);
+        video.src = cleanedUrl;
+
+        // Add play/pause overlay
+        const overlay = document.createElement('div');
+        overlay.style.position = 'absolute';
+        overlay.style.top = '0';
+        overlay.style.left = '0';
+        overlay.style.width = '100%';
+        overlay.style.height = '100%';
+        overlay.style.display = 'flex';
+        overlay.style.justifyContent = 'center';
+        overlay.style.alignItems = 'center';
+        overlay.style.backgroundColor = 'rgba(0,0,0,0.3)';
+        overlay.style.cursor = 'pointer';
+        overlay.style.opacity = '0';
+        overlay.style.transition = 'opacity 0.2s';
+
+        // Show overlay on hover
+        videoContainer.addEventListener('mouseenter', () => {
+            overlay.style.opacity = '1';
+        });
+        videoContainer.addEventListener('mouseleave', () => {
+            overlay.style.opacity = '0';
+        });
+
+        // Add play/pause functionality
+        overlay.addEventListener('click', () => {
+            if (video.paused) {
+                // Pause all other videos first
+                document.querySelectorAll('video').forEach(v => {
+                    if (v !== video) v.pause();
+                });
+                video.play();
+            } else {
+                video.pause();
             }
         });
+
+        videoContainer.appendChild(video);
+        videoContainer.appendChild(overlay);
 
         // Create button with progress bar
         const buttonWrapper = document.createElement('div');
@@ -341,9 +580,33 @@ function generateLinkButtons() {
         buttonWrapper.appendChild(button);
         buttonWrapper.appendChild(progressBar);
         
-        container.appendChild(thumbnail);
+        container.appendChild(videoContainer);
         container.appendChild(buttonWrapper);
         videoLinksPanel.appendChild(container);
+
+        // Handle video errors
+        video.addEventListener('error', () => {
+            appendLogText(`Failed to load video ${buttonCounter}`, 'error');
+            videoContainer.style.backgroundColor = '#ffebee';
+            const errorMsg = document.createElement('div');
+            errorMsg.textContent = 'Video preview unavailable';
+            errorMsg.style.color = '#d32f2f';
+            errorMsg.style.padding = '10px';
+            errorMsg.style.textAlign = 'center';
+            videoContainer.innerHTML = '';
+            videoContainer.appendChild(errorMsg);
+        });
+
+        // Optimize performance by pausing videos when not in viewport
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (!entry.isIntersecting && !video.paused) {
+                    video.pause();
+                }
+            });
+        }, { threshold: 0.5 });
+
+        observer.observe(videoContainer);
     }
 }
 

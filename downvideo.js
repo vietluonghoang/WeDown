@@ -51,6 +51,12 @@ const RATE_LIMIT = {
     COOLDOWN_PERIOD: 2000 // 2 seconds
 };
 
+// Add to the top with other constants
+const LOADING_STATES = {
+    DOTS_COUNT: 3,
+    INTERVAL: 500, // 500ms between dots updates
+};
+
 // Add these variables
 let activeDownloads = 0;
 let downloadQueue = [];
@@ -95,16 +101,13 @@ function cleanup() {
 
 (function () {
     cleanup(); // Clean up any existing instances
+    initializeScript(); // Initialize immediately
 
-    // Create the observer
+    // Create the observer for future navigation
     observer = new MutationObserver((mutations) => {
         if (!document.getElementById(videoDownloadPanelId)) {
             initializeScript();
         }
-    });
-
-    ['DOMContentLoaded', 'load'].forEach(event => {
-        window.addEventListener(event, initializeScript);
     });
 
     observer.observe(document.documentElement, {
@@ -117,20 +120,34 @@ function cleanup() {
 })();
 
 function initializeScript() {
+    // Create panel immediately
+    initComponents();
     appendLogText("------------\npage loaded....\n------------");
+    
+    // Clear any existing interval
     if (findPlayVideoInterval) {
         clearInterval(findPlayVideoInterval);
     }
     
+    // Start first scan immediately
+    checkForLinks();
+    
+    // Set up interval for subsequent scans
     const interval = rawVideoLinks.size > 0 ? INTERVALS.AFTER_FOUND : INTERVALS.DEFAULT;
     findPlayVideoInterval = setInterval(checkForLinks, interval);
+    
+    // Update search control button state
+    const searchBtn = document.getElementById('searchControlBtn');
+    if (searchBtn) {
+        const event = new Event('click');
+        searchBtn.dispatchEvent(event);
+    }
 }
 
 function checkForLinks(){
     appendLogText("------------\nscanning....\n------------");
     if(!hasStarted){
         hasStarted = true;
-        initComponents();
         appendLogText("Remove all links...");
         rawVideoLinks = new Map();
         appendURL();
@@ -345,7 +362,64 @@ function createVideosContainer() {
         backgroundColor: '#f8f9fa',
         borderBottom: '1px solid #dee2e6'
     });
+    
+    // Add initial loading state
+    showLoadingState(container);
+    
     return container;
+}
+
+function showLoadingState(container) {
+    // Create loading container
+    const loadingContainer = document.createElement('div');
+    Object.assign(loadingContainer.style, {
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '20px',
+        color: '#666',
+        height: '100px'
+    });
+    
+    // Add loading text
+    const loadingText = document.createElement('div');
+    loadingText.textContent = 'Searching';
+    loadingText.style.marginBottom = '10px';
+    loadingText.style.fontSize = '14px';
+    
+    // Add dots container
+    const dots = document.createElement('span');
+    dots.style.fontSize = '20px';
+    dots.style.letterSpacing = '4px';
+    
+    loadingContainer.appendChild(loadingText);
+    loadingContainer.appendChild(dots);
+    
+    // Clear container and add loading elements
+    removeAllChildNodes(container);
+    container.appendChild(loadingContainer);
+    
+    // Animate dots
+    let dotCount = 0;
+    const updateDots = () => {
+        dots.textContent = '.'.repeat(dotCount + 1);
+        dotCount = (dotCount + 1) % LOADING_STATES.DOTS_COUNT;
+    };
+    
+    updateDots(); // Initial dots
+    const dotsInterval = setInterval(updateDots, LOADING_STATES.INTERVAL);
+    
+    // Store interval ID in container dataset for cleanup
+    container.dataset.loadingInterval = dotsInterval;
+}
+
+function clearLoadingState(container) {
+    const intervalId = container.dataset.loadingInterval;
+    if (intervalId) {
+        clearInterval(parseInt(intervalId));
+        delete container.dataset.loadingInterval;
+    }
 }
 
 function createInfoContainer() {
@@ -382,18 +456,24 @@ function createSearchControl() {
     container.style.display = 'flex';
     container.style.alignItems = 'center';
     container.style.gap = '10px';
+    container.style.width = '100%';
 
     const button = document.createElement('button');
     button.id = 'searchControlBtn';
-    button.style.padding = '5px 10px';
-    button.style.borderRadius = '4px';
-    button.style.border = 'none';
-    button.style.cursor = 'pointer';
-    button.style.backgroundColor = '#4CAF50';
-    button.style.color = 'white';
+    Object.assign(button.style, {
+        padding: '5px 10px',
+        borderRadius: '4px',
+        border: 'none',
+        cursor: 'pointer',
+        backgroundColor: '#4CAF50',
+        color: 'white',
+        fontSize: '13px'
+    });
 
     const countdownText = document.createElement('span');
     countdownText.id = 'searchCountdown';
+    countdownText.style.color = 'rgba(255,255,255,0.8)';
+    countdownText.style.fontSize = '13px';
     
     container.appendChild(button);
     container.appendChild(countdownText);
@@ -403,39 +483,44 @@ function createSearchControl() {
     
     function updateButtonState(isSearching) {
         if (isSearching) {
-            button.textContent = 'Stop';
+            button.textContent = 'Stop Searching';
             button.style.backgroundColor = '#f44336';
-            updateCountdown();
+            startCountdown();
         } else {
-            button.textContent = 'Search now';
+            button.textContent = 'Start Searching';
             button.style.backgroundColor = '#4CAF50';
             countdownText.textContent = '';
             if (countdownInterval) {
                 clearInterval(countdownInterval);
+                countdownInterval = null;
             }
         }
     }
 
-    function updateCountdown() {
-        countdown = findPlayVideoInterval ? 
-            (rawVideoLinks.size > 0 ? INTERVALS.AFTER_FOUND : INTERVALS.DEFAULT) / 1000 : 
-            INTERVALS.DEFAULT / 1000;
-            
-        function tick() {
-            countdown--;
-            countdownText.textContent = `Searching in ${countdown}s...`;
-            if (countdown <= 0) {
-                countdown = findPlayVideoInterval ? 
-                    (rawVideoLinks.size > 0 ? INTERVALS.AFTER_FOUND : INTERVALS.DEFAULT) / 1000 : 
-                    INTERVALS.DEFAULT / 1000;
-            }
-        }
-
+    function startCountdown() {
+        // Clear any existing interval
         if (countdownInterval) {
             clearInterval(countdownInterval);
         }
-        countdownText.textContent = `Searching in ${countdown}s...`;
-        countdownInterval = setInterval(tick, 1000);
+
+        // Reset countdown based on current state
+        countdown = rawVideoLinks.size > 0 ? 
+            INTERVALS.AFTER_FOUND / 1000 : 
+            INTERVALS.DEFAULT / 1000;
+
+        // Update immediately
+        countdownText.textContent = `Next scan in ${countdown}s`;
+
+        // Start countdown
+        countdownInterval = setInterval(() => {
+            countdown--;
+            if (countdown <= 0) {
+                countdown = rawVideoLinks.size > 0 ? 
+                    INTERVALS.AFTER_FOUND / 1000 : 
+                    INTERVALS.DEFAULT / 1000;
+            }
+            countdownText.textContent = `Next scan in ${countdown}s`;
+        }, 1000);
     }
 
     button.addEventListener('click', () => {
@@ -445,25 +530,18 @@ function createSearchControl() {
             findPlayVideoInterval = null;
             updateButtonState(false);
         } else {
-            // Clear existing links
-            rawVideoLinks.clear();
+            // Start searching
+            checkForLinks(); // Immediate search
             
-            // Remove existing video elements
-            const videoLinksPanel = document.getElementById(videoLinksPanelId);
-            if (videoLinksPanel) {
-                removeAllChildNodes(videoLinksPanel);
-            }
+            // Set interval based on whether videos were found
+            const interval = rawVideoLinks.size > 0 ? INTERVALS.AFTER_FOUND : INTERVALS.DEFAULT;
+            findPlayVideoInterval = setInterval(checkForLinks, interval);
             
-            // Perform immediate search
-            checkForLinks();
-            
-            // Start interval with default timing
-            findPlayVideoInterval = setInterval(checkForLinks, INTERVALS.DEFAULT);
             updateButtonState(true);
         }
     });
 
-    // Initial state
+    // Set initial state
     updateButtonState(!!findPlayVideoInterval);
     
     return container;
@@ -510,12 +588,11 @@ function initComponents() {
     videoDownloadPanel = document.getElementById(videoDownloadPanelId);
     if (videoDownloadPanel == null) {
         generateVideoDownloadPanel();
-    } else {
-        // Only clear the videos panel
-        const videoLinksPanel = document.getElementById(videoLinksPanelId);
-        if (videoLinksPanel) {
-            removeAllChildNodes(videoLinksPanel);
-        }
+    }
+    
+    const videoLinksPanel = document.getElementById(videoLinksPanelId);
+    if (videoLinksPanel) {
+        showLoadingState(videoLinksPanel);
     }
 }
 
@@ -666,44 +743,63 @@ function generateLinkButtons() {
         return;
     }
 
-    // Clear existing content
+    // Clear loading state and existing content
+    clearLoadingState(videoLinksPanel);
     removeAllChildNodes(videoLinksPanel);
+
+    // If no videos found, show message
+    if (rawVideoLinks.size === 0) {
+        const noVideosMsg = document.createElement('div');
+        Object.assign(noVideosMsg.style, {
+            padding: '20px',
+            textAlign: 'center',
+            color: '#666',
+            fontSize: '14px'
+        });
+        noVideosMsg.textContent = 'No videos found on this page';
+        videoLinksPanel.appendChild(noVideosMsg);
+        return;
+    }
 
     for (let [videoLink, quality] of rawVideoLinks) {
         buttonCounter++;
         
-        // Create container for video player and buttons
+        // Create container for video player and button
         const container = document.createElement('div');
-        container.style.display = 'flex';
-        container.style.alignItems = 'center';
-        container.style.margin = '5px';
-        container.style.padding = '5px';
-        container.style.backgroundColor = '#f0f0f0';
-        container.style.borderRadius = '5px';
-        container.style.width = 'fit-content';
+        Object.assign(container.style, {
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between', // Space between video and button
+            margin: '5px 0', // Remove horizontal margin
+            padding: '8px',
+            backgroundColor: '#f0f0f0',
+            borderRadius: '5px',
+            width: '100%', // Full width of parent
+            boxSizing: 'border-box' // Include padding in width calculation
+        });
 
         // Create video player
         const videoContainer = document.createElement('div');
-        videoContainer.style.height = '100px'; // Fixed height
-        videoContainer.style.marginRight = '10px';
-        videoContainer.style.position = 'relative';
-        videoContainer.style.overflow = 'hidden';
+        Object.assign(videoContainer.style, {
+            height: '100px',
+            width: '178px', // 16:9 aspect ratio for 100px height
+            marginRight: '10px',
+            position: 'relative',
+            overflow: 'hidden',
+            flexShrink: '0' // Prevent video from shrinking
+        });
 
         const video = document.createElement('video');
-        video.style.height = '100%';
-        video.style.objectFit = 'contain';
-        video.style.borderRadius = '4px';
-        video.style.backgroundColor = '#000';
+        Object.assign(video.style, {
+            height: '100%',
+            width: '100%',
+            objectFit: 'contain',
+            borderRadius: '4px',
+            backgroundColor: '#000'
+        });
         video.controls = true;
         video.preload = 'metadata';
         video.muted = true;
-
-        // Add event listener to adjust container width based on video metadata
-        video.addEventListener('loadedmetadata', () => {
-            const aspectRatio = video.videoWidth / video.videoHeight;
-            const containerWidth = Math.round(100 * aspectRatio);
-            videoContainer.style.width = `${containerWidth}px`;
-        });
 
         // Clean the video URL
         const cleanedUrl = cleanVideoUrl(videoLink);
@@ -711,19 +807,45 @@ function generateLinkButtons() {
 
         videoContainer.appendChild(video);
 
-        // Create button with progress bar
-        const buttonWrapper = document.createElement('div');
-        buttonWrapper.style.position = 'relative';
-        buttonWrapper.style.flex = '1'; // Take remaining space
+        // Create button container for right alignment
+        const buttonContainer = document.createElement('div');
+        Object.assign(buttonContainer.style, {
+            marginLeft: 'auto', // Push to right
+            display: 'flex',
+            alignItems: 'center'
+        });
+
+        // Create open button
+        const button = document.createElement('button');
+        button.innerHTML = `${quality} - Open Video ${buttonCounter} 🔗`;
+        Object.assign(button.style, {
+            padding: '8px 16px',
+            fontSize: '14px',
+            backgroundColor: '#007bff',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            whiteSpace: 'nowrap' // Prevent button text from wrapping
+        });
+
+        // Add hover effect
+        button.addEventListener('mouseover', () => button.style.opacity = '0.9');
+        button.addEventListener('mouseout', () => button.style.opacity = '1');
+
+        // Add click handler
+        button.addEventListener('click', () => {
+            try {
+                window.open(cleanedUrl, '_blank');
+                appendLogText(`Opening video link in new tab`, 'info');
+            } catch (error) {
+                appendLogText(`Failed to open link: ${error.message}`, 'error');
+            }
+        });
         
-        const button = createDownloadButton(buttonCounter, quality, videoLink);
-        const progressBar = createProgressBar();
-        
-        buttonWrapper.appendChild(button);
-        buttonWrapper.appendChild(progressBar);
-        
+        buttonContainer.appendChild(button);
         container.appendChild(videoContainer);
-        container.appendChild(buttonWrapper);
+        container.appendChild(buttonContainer);
         videoLinksPanel.appendChild(container);
 
         // Handle video errors
@@ -731,10 +853,16 @@ function generateLinkButtons() {
             appendLogText(`Failed to load video ${buttonCounter}`, 'error');
             videoContainer.style.backgroundColor = '#ffebee';
             const errorMsg = document.createElement('div');
+            Object.assign(errorMsg.style, {
+                color: '#d32f2f',
+                padding: '10px',
+                textAlign: 'center',
+                height: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+            });
             errorMsg.textContent = 'Video preview unavailable';
-            errorMsg.style.color = '#d32f2f';
-            errorMsg.style.padding = '10px';
-            errorMsg.style.textAlign = 'center';
             videoContainer.innerHTML = '';
             videoContainer.appendChild(errorMsg);
         });
@@ -752,83 +880,6 @@ function generateLinkButtons() {
     }
 }
 
-// Update the createDownloadButton function
-function createDownloadButton(counter, quality, link) {
-    // Create a container for both buttons
-    const buttonContainer = document.createElement('div');
-    buttonContainer.style.display = 'flex';
-    buttonContainer.style.gap = '5px';
-
-    // Create download button
-    const downloadButton = document.createElement('button');
-    downloadButton.innerHTML = `${quality} - Download Video ${counter}`;
-    downloadButton.id = `dwnVidBtn${counter}`;
-    downloadButton.className = 'download-button';
-    downloadButton.setAttribute('link', link);
-    
-    Object.assign(downloadButton.style, {
-        padding: '8px 16px',
-        fontSize: '14px',
-        backgroundColor: '#4CAF50',
-        color: 'white',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'pointer'
-    });
-
-    downloadButton.addEventListener('click', async function() {
-        try {
-            const progressBar = this.parentElement.parentElement.querySelector('.progress-bar');
-            await downloadVideo(link, progressBar);
-        } catch (error) {
-            appendLogText(`Download failed: ${error.message}`, 'error');
-        }
-    });
-
-    // Create open in new tab button
-    const openButton = document.createElement('button');
-    openButton.innerHTML = '🔗 Open';
-    openButton.className = 'open-button';
-    openButton.setAttribute('link', link);
-    
-    Object.assign(openButton.style, {
-        padding: '8px 16px',
-        fontSize: '14px',
-        backgroundColor: '#007bff',
-        color: 'white',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'pointer'
-    });
-
-    openButton.addEventListener('click', function() {
-        try {
-            const videoLink = this.getAttribute('link');
-            // Clean and open the URL
-            const cleanedUrl = cleanVideoUrl(videoLink);
-            window.open(cleanedUrl, '_blank');
-            appendLogText(`Opening video link in new tab`, 'info');
-        } catch (error) {
-            appendLogText(`Failed to open link: ${error.message}`, 'error');
-        }
-    });
-
-    // Add hover effect to both buttons
-    [downloadButton, openButton].forEach(button => {
-        button.addEventListener('mouseover', function() {
-            this.style.opacity = '0.9';
-        });
-        button.addEventListener('mouseout', function() {
-            this.style.opacity = '1';
-        });
-    });
-
-    buttonContainer.appendChild(downloadButton);
-    buttonContainer.appendChild(openButton);
-    
-    return buttonContainer;
-}
-
 // Add a helper function to clean video URLs
 function cleanVideoUrl(url) {
     if (!url) return '';
@@ -843,81 +894,6 @@ function cleanVideoUrl(url) {
     } catch (e) {
         appendLogText(`Error decoding URL: ${e.message}`, 'error');
         return url;
-    }
-}
-
-function createProgressBar() {
-    const progress = document.createElement('div');
-    progress.className = 'progress-bar';
-    Object.assign(progress.style, {
-        width: '100%',
-        height: '4px',
-        backgroundColor: '#ddd',
-        marginTop: '4px',
-        display: 'none'
-    });
-
-    const progressFill = document.createElement('div');
-    Object.assign(progressFill.style, {
-        width: '0%',
-        height: '100%',
-        backgroundColor: '#4CAF50',
-        transition: 'width 0.3s'
-    });
-
-    progress.appendChild(progressFill);
-    return progress;
-}
-
-async function downloadVideo(url, progressBar) {
-    if (activeDownloads >= RATE_LIMIT.MAX_CONCURRENT_DOWNLOADS) {
-        appendLogText('Too many concurrent downloads. Adding to queue...', 'warn');
-        return new Promise((resolve, reject) => {
-            downloadQueue.push({ url, progressBar, resolve, reject });
-        });
-    }
-    
-    activeDownloads++;
-    try {
-        progressBar.style.display = 'block';
-        const response = await fetch(url);
-        const reader = response.body.getReader();
-        const contentLength = +response.headers.get('Content-Length');
-        
-        let receivedLength = 0;
-        while(true) {
-            const {done, value} = await reader.read();
-            if (done) break;
-            
-            receivedLength += value.length;
-            const progress = (receivedLength / contentLength) * 100;
-            progressBar.firstChild.style.width = `${progress}%`;
-        }
-        
-        appendLogText('Download completed successfully', 'info');
-    } finally {
-        activeDownloads--;
-        setTimeout(processDownloadQueue, RATE_LIMIT.COOLDOWN_PERIOD);
-    }
-}
-
-function processDownloadQueue() {
-    if (downloadQueue.length > 0 && activeDownloads < RATE_LIMIT.MAX_CONCURRENT_DOWNLOADS) {
-        const nextDownload = downloadQueue.shift();
-        downloadVideo(nextDownload.url, nextDownload.progressBar)
-            .then(nextDownload.resolve)
-            .catch(nextDownload.reject);
-    }
-}
-
-async function fetchVideoThumbnail(videoUrl) {
-    try {
-        // Try to extract thumbnail from video URL or fetch it from Facebook's API
-        // This is a placeholder - you'll need to implement the actual thumbnail extraction logic
-        return null;
-    } catch (error) {
-        appendLogText(`Failed to fetch thumbnail: ${error.message}`, 'error');
-        return null;
     }
 }
 

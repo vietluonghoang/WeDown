@@ -2,7 +2,7 @@
 // ==UserScript==
 // @name         Get Facebook Video Link
 // @namespace    http://tampermonkey.net/
-// @version      0.1.6
+// @version      0.1.7
 // @description  Simply get the downloadable video facebooklink from the page source
 // @author       Viet Cat
 // @match        https://www.facebook.com/*
@@ -42,6 +42,32 @@ const INTERVALS = {
     AFTER_FOUND: 30000  // 30 seconds
 };
 
+// Add near the top with other constants
+const DEBOUNCE_DELAY = 100;
+
+// Add near the top with other constants
+const RATE_LIMIT = {
+    MAX_CONCURRENT_DOWNLOADS: 3,
+    COOLDOWN_PERIOD: 2000 // 2 seconds
+};
+
+// Add these variables
+let activeDownloads = 0;
+let downloadQueue = [];
+
+// Add this utility function
+function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+        const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+    };
+}
+
 function cleanup() {
     if (findPlayVideoInterval) {
         clearInterval(findPlayVideoInterval);
@@ -49,11 +75,22 @@ function cleanup() {
     if (observer) {
         observer.disconnect();
     }
+    
+    // Clean up video elements and their observers
+    document.querySelectorAll('video').forEach(video => {
+        video.pause();
+        video.src = '';
+        video.load();
+    });
+    
     // Remove existing panels if they exist
     const existingPanel = document.getElementById(videoDownloadPanelId);
     if (existingPanel) {
         existingPanel.remove();
     }
+    
+    // Clear stored links
+    rawVideoLinks.clear();
 }
 
 (function () {
@@ -135,7 +172,6 @@ function generateInfoPanel(){
     infoPanel.style.width = "calc(100% - 20px)"; // Account for padding
     infoPanel.style.height = "100px";
     infoPanel.style.position = 'relative';
-    infoPanel.style.margin = '10px';
     infoPanel.rows = 4;
     infoPanel.style.zIndex = "5000";
     infoPanel.style.backgroundColor = "#f5f5f5";
@@ -153,92 +189,192 @@ function generateInfoPanel(){
     }
 }
 
-function generateVideoDownloadPanel(){
+function generateVideoDownloadPanel() {
     appendLogText("------------\nGenerating Video Download panel...\n------------");
     
-    // Create panel
     videoDownloadPanel = document.createElement("div");
     videoDownloadPanel.name = videoDownloadPanelId;
     videoDownloadPanel.id = videoDownloadPanelId;
-    videoDownloadPanel.style.top = "50px";
-    videoDownloadPanel.style.left = "50px";
-    videoDownloadPanel.style.position = "fixed";
-    videoDownloadPanel.style.margin = "10px 0px";
-    videoDownloadPanel.style.width = "fit-content";
-    videoDownloadPanel.style.maxHeight = "90vh"; // Limit height to 90% of viewport height
-    videoDownloadPanel.style.display = "flex";
-    videoDownloadPanel.style.flexDirection = "column";
-    videoDownloadPanel.style.alignItems = 'center';
-    videoDownloadPanel.style.zIndex = "5000";
-    videoDownloadPanel.style.backgroundColor = "#ffffff"; // Add background color
-    videoDownloadPanel.style.boxShadow = "0 2px 10px rgba(0,0,0,0.1)"; // Add shadow for better visibility
-    
-    // Add header bar
-    const headerBar = createHeaderBar();
-    videoDownloadPanel.appendChild(headerBar);
-    
-    // Create scrollable content container
-    const contentContainer = document.createElement("div");
-    contentContainer.style.width = "100%";
-    contentContainer.style.flex = "1";
-    contentContainer.style.overflowY = "auto";
-    contentContainer.style.overflowX = "hidden";
-    contentContainer.style.maxHeight = "calc(90vh - 50px)"; // Subtract header height
-    contentContainer.style.scrollbarWidth = "thin"; // For Firefox
-    contentContainer.style.scrollbarColor = "#888 #f1f1f1"; // For Firefox
-    
-    // Add custom scrollbar styles for WebKit browsers
-    contentContainer.style.cssText += `
-        &::-webkit-scrollbar {
-            width: 8px;
-        }
-        &::-webkit-scrollbar-track {
-            background: #f1f1f1;
-        }
-        &::-webkit-scrollbar-thumb {
-            background: #888;
-            border-radius: 4px;
-        }
-        &::-webkit-scrollbar-thumb:hover {
-            background: #555;
-        }
-    `;
-    
-    videoDownloadPanel.appendChild(contentContainer);
-    
-    // Add to DOM
-    document.body.appendChild(videoDownloadPanel);
+    Object.assign(videoDownloadPanel.style, {
+        top: "20px",
+        right: "20px",
+        left: "auto",
+        position: "fixed",
+        margin: "0",
+        width: "400px",
+        maxHeight: "90vh",
+        display: "flex",
+        flexDirection: "column",
+        zIndex: "9999",
+        backgroundColor: "#ffffff",
+        boxShadow: "0 4px 20px rgba(0,0,0,0.15)",
+        borderRadius: "8px",
+        overflow: "hidden" // Ensure inner content respects border radius
+    });
 
-    // Set initial position
-    topOffset = videoDownloadPanel.offsetTop;
-    leftOffset = videoDownloadPanel.offsetLeft;
-    window.addEventListener('load', updateFloatingTablePosition);
-    window.addEventListener('scroll', updateFloatingTablePosition);
+    // Add sections in order: header, videos panel, info panel
+    const headerBar = createHeaderBar();
+    headerBar.classList.add('header-bar');
+    const videosContainer = createVideosContainer();
+    const infoContainer = createInfoContainer();
     
-    return contentContainer; // Return the content container for other functions to use
+    videoDownloadPanel.appendChild(headerBar);
+    videoDownloadPanel.appendChild(videosContainer);
+    videoDownloadPanel.appendChild(infoContainer);
+    
+    document.body.appendChild(videoDownloadPanel);
+    makeDraggable(videoDownloadPanel, headerBar);
 }
 
 function createHeaderBar() {
     const headerBar = document.createElement('div');
-    headerBar.style.width = '100%';
-    headerBar.style.padding = '10px';
-    headerBar.style.backgroundColor = '#f0f0f0';
-    headerBar.style.borderBottom = '1px solid #ddd';
-    headerBar.style.display = 'flex';
-    headerBar.style.alignItems = 'center';
-    headerBar.style.justifyContent = 'space-between';
-    headerBar.style.borderRadius = '4px 4px 0 0';
+    Object.assign(headerBar.style, {
+        width: '100%',
+        backgroundColor: '#4a76a8',
+        color: 'white',
+        borderBottom: '1px solid rgba(255,255,255,0.1)',
+        borderRadius: '8px 8px 0 0',
+        cursor: 'move'
+    });
+
+    // Title section
+    const titleSection = document.createElement('div');
+    Object.assign(titleSection.style, {
+        padding: '12px 15px',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        borderBottom: '1px solid rgba(255,255,255,0.1)'
+    });
 
     const title = document.createElement('span');
-    title.textContent = 'Facebook Video Downloader';
-    title.style.fontWeight = 'bold';
+    title.textContent = 'Video Downloader';
+    title.style.fontWeight = '600';
+    title.style.fontSize = '14px';
+
+    const toggleButton = createToggleButton();
+    
+    titleSection.appendChild(title);
+    titleSection.appendChild(toggleButton);
+
+    // Search control section
+    const searchSection = document.createElement('div');
+    Object.assign(searchSection.style, {
+        padding: '10px 15px',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        backgroundColor: 'rgba(0,0,0,0.1)'
+    });
 
     const searchControl = createSearchControl();
-    
-    headerBar.appendChild(title);
-    headerBar.appendChild(searchControl);
+    searchSection.appendChild(searchControl);
+
+    headerBar.appendChild(titleSection);
+    headerBar.appendChild(searchSection);
     
     return headerBar;
+}
+
+function createToggleButton() {
+    const button = document.createElement('button');
+    button.innerHTML = '▼'; // Down arrow for expanded state
+    Object.assign(button.style, {
+        background: 'none',
+        border: 'none',
+        color: 'white',
+        fontSize: '16px',
+        cursor: 'pointer',
+        padding: '0 5px',
+        lineHeight: '1',
+        opacity: '0.8',
+        transition: 'transform 0.3s ease'
+    });
+    
+    let isExpanded = true;
+    
+    button.addEventListener('mouseover', () => button.style.opacity = '1');
+    button.addEventListener('mouseout', () => button.style.opacity = '0.8');
+    button.addEventListener('click', (e) => {
+        e.stopPropagation(); // Prevent dragging when clicking the button
+        
+        const panel = document.getElementById(videoDownloadPanelId);
+        const videosContainer = document.getElementById(videoLinksPanelId);
+        const infoContainer = document.getElementById(infoPanelID)?.parentElement;
+        const searchSection = button.closest('.header-bar')?.querySelector('div:nth-child(2)');
+        
+        if (isExpanded) {
+            // Collapse
+            if (videosContainer) videosContainer.style.display = 'none';
+            if (infoContainer) infoContainer.style.display = 'none';
+            if (searchSection) searchSection.style.display = 'none';
+            button.innerHTML = '▲'; // Up arrow for collapsed state
+            button.style.transform = 'rotate(180deg)';
+            
+            // Store current height before collapsing
+            panel.dataset.expandedHeight = panel.style.height;
+            panel.style.height = 'auto';
+        } else {
+            // Expand
+            if (videosContainer) videosContainer.style.display = 'block';
+            if (infoContainer) infoContainer.style.display = 'block';
+            if (searchSection) searchSection.style.display = 'flex';
+            button.innerHTML = '▼'; // Down arrow for expanded state
+            button.style.transform = 'rotate(0deg)';
+            
+            // Restore previous height if it was stored
+            if (panel.dataset.expandedHeight) {
+                panel.style.height = panel.dataset.expandedHeight;
+            }
+        }
+        
+        isExpanded = !isExpanded;
+    });
+    
+    return button;
+}
+
+function createVideosContainer() {
+    const container = document.createElement('div');
+    container.id = videoLinksPanelId;
+    Object.assign(container.style, {
+        flex: '1',
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        padding: '10px',
+        backgroundColor: '#f8f9fa',
+        borderBottom: '1px solid #dee2e6'
+    });
+    return container;
+}
+
+function createInfoContainer() {
+    const container = document.createElement('div');
+    Object.assign(container.style, {
+        padding: '10px',
+        width: '100%',
+        boxSizing: 'border-box',
+        borderTop: '1px solid #dee2e6'
+    });
+    
+    const infoPanel = document.createElement('textarea');
+    infoPanel.id = infoPanelID;
+    Object.assign(infoPanel.style, {
+        width: '100%',
+        height: '100px',
+        padding: '8px',
+        fontSize: '12px',
+        fontFamily: 'monospace',
+        border: '1px solid #dee2e6',
+        borderRadius: '4px',
+        resize: 'vertical',
+        backgroundColor: '#f8f9fa',
+        boxSizing: 'border-box', // This ensures padding is included in width
+        display: 'block'  // Ensures proper block layout
+    });
+    
+    container.appendChild(infoPanel);
+    return container;
 }
 
 function createSearchControl() {
@@ -333,33 +469,53 @@ function createSearchControl() {
     return container;
 }
 
-function initComponents(){
-    //check if the panel for video download is existed
+function makeDraggable(element, handle) {
+    let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+    
+    handle.onmousedown = dragMouseDown;
+
+    function dragMouseDown(e) {
+        e.preventDefault();
+        pos3 = e.clientX;
+        pos4 = e.clientY;
+        document.onmouseup = closeDragElement;
+        document.onmousemove = elementDrag;
+    }
+
+    function elementDrag(e) {
+        e.preventDefault();
+        pos1 = pos3 - e.clientX;
+        pos2 = pos4 - e.clientY;
+        pos3 = e.clientX;
+        pos4 = e.clientY;
+        
+        const newTop = element.offsetTop - pos2;
+        const newLeft = element.offsetLeft - pos1;
+        
+        // Keep within viewport bounds
+        const maxTop = window.innerHeight - element.offsetHeight;
+        const maxLeft = window.innerWidth - element.offsetWidth;
+        
+        element.style.top = `${Math.min(Math.max(0, newTop), maxTop)}px`;
+        element.style.left = `${Math.min(Math.max(0, newLeft), maxLeft)}px`;
+    }
+
+    function closeDragElement() {
+        document.onmouseup = null;
+        document.onmousemove = null;
+    }
+}
+
+function initComponents() {
     videoDownloadPanel = document.getElementById(videoDownloadPanelId);
-    if(videoDownloadPanel == null){
+    if (videoDownloadPanel == null) {
         generateVideoDownloadPanel();
-    }else{
-        // Keep the header bar and only remove video links panel and info panel
+    } else {
+        // Only clear the videos panel
         const videoLinksPanel = document.getElementById(videoLinksPanelId);
         if (videoLinksPanel) {
-            videoLinksPanel.remove();
+            removeAllChildNodes(videoLinksPanel);
         }
-        const infoPanel = document.getElementById(infoPanelID);
-        if (infoPanel) {
-            infoPanel.remove();
-        }
-    }
-
-    //check if the panel for all link is existed
-    videoLinksPanel = document.getElementById(videoLinksPanelId);
-    if(videoLinksPanel == null){
-        generateVideoLinksPanel();
-    }
-
-    //check if the panel for info is existed
-    infoPanel = document.getElementById(infoPanelID);
-    if(infoPanel == null){
-        generateInfoPanel();
     }
 }
 
@@ -474,13 +630,25 @@ function isValidVideoUrl(url) {
         
         const urlObj = new URL(url);
         
-        // Accept more Facebook CDN domains
-        const validDomains = ['fbcdn.net', 'facebook.com', 'fbsbx.com'];
-        const isValidDomain = validDomains.some(domain => urlObj.hostname.includes(domain));
+        // Extended list of valid domains
+        const validDomains = [
+            'fbcdn.net',
+            'facebook.com',
+            'fbsbx.com',
+            'fb.watch',
+            'fb.gg'
+        ];
+        
+        // Check for valid domain
+        const isValidDomain = validDomains.some(domain => 
+            urlObj.hostname.toLowerCase().includes(domain));
+        
+        // Check for valid video path
+        const hasValidPath = /\.(mp4|mov|m4v)($|\?)|\/video\/|\/fbcdn\//.test(urlObj.pathname);
         
         return urlObj.protocol === 'https:' && 
                isValidDomain && 
-               (url.endsWith('.mp4') || url.includes('video') || url.includes('fbcdn'));
+               hasValidPath;
     } catch (error) {
         appendLogText(`Invalid URL: ${error.message}`, 'debug');
         return false;
@@ -490,6 +658,16 @@ function isValidVideoUrl(url) {
 function generateLinkButtons() {
     let buttonCounter = 0;
     appendLogText(`Generating buttons for ${rawVideoLinks.size} videos`, 'info');
+
+    // Get the videos container
+    const videoLinksPanel = document.getElementById(videoLinksPanelId);
+    if (!videoLinksPanel) {
+        appendLogText('Video links panel not found', 'error');
+        return;
+    }
+
+    // Clear existing content
+    removeAllChildNodes(videoLinksPanel);
 
     for (let [videoLink, quality] of rawVideoLinks) {
         buttonCounter++;
@@ -513,9 +691,9 @@ function generateLinkButtons() {
 
         const video = document.createElement('video');
         video.style.height = '100%';
-        video.style.objectFit = 'contain'; // Changed from 'cover' to 'contain'
+        video.style.objectFit = 'contain';
         video.style.borderRadius = '4px';
-        video.style.backgroundColor = '#000'; // Add background for letterboxing
+        video.style.backgroundColor = '#000';
         video.controls = true;
         video.preload = 'metadata';
         video.muted = true;
@@ -523,7 +701,7 @@ function generateLinkButtons() {
         // Add event listener to adjust container width based on video metadata
         video.addEventListener('loadedmetadata', () => {
             const aspectRatio = video.videoWidth / video.videoHeight;
-            const containerWidth = Math.round(100 * aspectRatio); // Calculate width based on 100px height
+            const containerWidth = Math.round(100 * aspectRatio);
             videoContainer.style.width = `${containerWidth}px`;
         });
 
@@ -531,48 +709,12 @@ function generateLinkButtons() {
         const cleanedUrl = cleanVideoUrl(videoLink);
         video.src = cleanedUrl;
 
-        // Add play/pause overlay
-        const overlay = document.createElement('div');
-        overlay.style.position = 'absolute';
-        overlay.style.top = '0';
-        overlay.style.left = '0';
-        overlay.style.width = '100%';
-        overlay.style.height = '100%';
-        overlay.style.display = 'flex';
-        overlay.style.justifyContent = 'center';
-        overlay.style.alignItems = 'center';
-        overlay.style.backgroundColor = 'rgba(0,0,0,0.3)';
-        overlay.style.cursor = 'pointer';
-        overlay.style.opacity = '0';
-        overlay.style.transition = 'opacity 0.2s';
-
-        // Show overlay on hover
-        videoContainer.addEventListener('mouseenter', () => {
-            overlay.style.opacity = '1';
-        });
-        videoContainer.addEventListener('mouseleave', () => {
-            overlay.style.opacity = '0';
-        });
-
-        // Add play/pause functionality
-        overlay.addEventListener('click', () => {
-            if (video.paused) {
-                // Pause all other videos first
-                document.querySelectorAll('video').forEach(v => {
-                    if (v !== video) v.pause();
-                });
-                video.play();
-            } else {
-                video.pause();
-            }
-        });
-
         videoContainer.appendChild(video);
-        videoContainer.appendChild(overlay);
 
         // Create button with progress bar
         const buttonWrapper = document.createElement('div');
         buttonWrapper.style.position = 'relative';
+        buttonWrapper.style.flex = '1'; // Take remaining space
         
         const button = createDownloadButton(buttonCounter, quality, videoLink);
         const progressBar = createProgressBar();
@@ -728,6 +870,14 @@ function createProgressBar() {
 }
 
 async function downloadVideo(url, progressBar) {
+    if (activeDownloads >= RATE_LIMIT.MAX_CONCURRENT_DOWNLOADS) {
+        appendLogText('Too many concurrent downloads. Adding to queue...', 'warn');
+        return new Promise((resolve, reject) => {
+            downloadQueue.push({ url, progressBar, resolve, reject });
+        });
+    }
+    
+    activeDownloads++;
     try {
         progressBar.style.display = 'block';
         const response = await fetch(url);
@@ -745,13 +895,18 @@ async function downloadVideo(url, progressBar) {
         }
         
         appendLogText('Download completed successfully', 'info');
-    } catch (error) {
-        appendLogText(`Download failed: ${error.message}`, 'error');
-        throw error;
     } finally {
-        setTimeout(() => {
-            progressBar.style.display = 'none';
-        }, 1000);
+        activeDownloads--;
+        setTimeout(processDownloadQueue, RATE_LIMIT.COOLDOWN_PERIOD);
+    }
+}
+
+function processDownloadQueue() {
+    if (downloadQueue.length > 0 && activeDownloads < RATE_LIMIT.MAX_CONCURRENT_DOWNLOADS) {
+        const nextDownload = downloadQueue.shift();
+        downloadVideo(nextDownload.url, nextDownload.progressBar)
+            .then(nextDownload.resolve)
+            .catch(nextDownload.reject);
     }
 }
 
@@ -794,16 +949,23 @@ function updateFloatingTablePosition() {
 // Replace the existing appendLogText function
 function appendLogText(newLog, type = 'info') {
     try {
-        let logText = "";
+        // Get the info panel element
+        const infoPanel = document.getElementById(infoPanelID);
+        if (!infoPanel) {
+            console.warn('Info panel not found');
+            return;
+        }
         
         // Format log with timestamp and type
         const timestamp = new Date().toLocaleTimeString();
         const formattedLog = `[${timestamp}][${type}] ${newLog}`;
         
         // UI Logging
-        if (CONFIG.enableUILog && infoPanel) {
-            logText = infoPanel.value;
-            infoPanel.innerHTML = logText + "\n" + formattedLog;
+        if (CONFIG.enableUILog) {
+            // Add new log to existing content
+            infoPanel.value = infoPanel.value 
+                ? infoPanel.value + '\n' + formattedLog 
+                : formattedLog;
             
             // Auto-scroll to bottom
             infoPanel.scrollTop = infoPanel.scrollHeight;

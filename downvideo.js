@@ -2,7 +2,7 @@
 // ==UserScript==
 // @name         Get Facebook Video Link
 // @namespace    http://tampermonkey.net/
-// @version      0.1.7
+// @version      0.1.8
 // @description  Simply get the downloadable video facebooklink from the page source
 // @author       Viet Cat
 // @match        https://www.facebook.com/*
@@ -124,10 +124,8 @@ function initializeScript() {
     initComponents();
     appendLogText("------------\npage loaded....\n------------");
     
-    // Clear any existing interval
-    if (findPlayVideoInterval) {
-        clearInterval(findPlayVideoInterval);
-    }
+    // Stop any existing search
+    stopSearchInterval();
     
     // Start first scan immediately
     checkForLinks();
@@ -135,24 +133,18 @@ function initializeScript() {
     // Set up interval for subsequent scans
     const interval = rawVideoLinks.size > 0 ? INTERVALS.AFTER_FOUND : INTERVALS.DEFAULT;
     findPlayVideoInterval = setInterval(checkForLinks, interval);
-    
-    // Update search control button state
-    const searchBtn = document.getElementById('searchControlBtn');
-    if (searchBtn) {
-        const event = new Event('click');
-        searchBtn.dispatchEvent(event);
-    }
 }
 
-function checkForLinks(){
+function checkForLinks() {
     appendLogText("------------\nscanning....\n------------");
-    if(!hasStarted){
+    // Only proceed if we're not already scanning and the interval is active
+    if (!hasStarted && findPlayVideoInterval) {
         hasStarted = true;
         appendLogText("Remove all links...");
         rawVideoLinks = new Map();
         appendURL();
         hasStarted = false;
-    }else{
+    } else {
         appendLogText("Scanning is in progress already...");
     }
 }
@@ -214,30 +206,43 @@ function generateVideoDownloadPanel() {
     videoDownloadPanel.id = videoDownloadPanelId;
     Object.assign(videoDownloadPanel.style, {
         top: "20px",
-        right: "20px",
-        left: "auto",
+        right: "20px", // Keep panel anchored to the right
         position: "fixed",
         margin: "0",
-        width: "400px",
+        width: "520px", // Default width with toggle
         maxHeight: "90vh",
         display: "flex",
-        flexDirection: "column",
+        flexDirection: "row",
         zIndex: "9999",
         backgroundColor: "#ffffff",
         boxShadow: "0 4px 20px rgba(0,0,0,0.15)",
         borderRadius: "8px",
-        overflow: "hidden" // Ensure inner content respects border radius
+        overflow: "visible" // Allow info panel to expand outside
     });
 
-    // Add sections in order: header, videos panel, info panel
+    // Create info section (left side)
+    const infoSection = createInfoSection();
+    
+    // Create main content container (right side)
+    const mainContent = document.createElement('div');
+    Object.assign(mainContent.style, {
+        flex: 'none',
+        display: 'flex',
+        flexDirection: 'column',
+        width: '500px',
+        minWidth: '500px'
+    });
+
+    // Add sections to main content
     const headerBar = createHeaderBar();
     headerBar.classList.add('header-bar');
-    const videosContainer = createVideosContainer();
-    const infoContainer = createInfoContainer();
+    const contentContainer = createContentContainer();
     
-    videoDownloadPanel.appendChild(headerBar);
-    videoDownloadPanel.appendChild(videosContainer);
-    videoDownloadPanel.appendChild(infoContainer);
+    mainContent.appendChild(headerBar);
+    mainContent.appendChild(contentContainer);
+    
+    videoDownloadPanel.appendChild(infoSection);
+    videoDownloadPanel.appendChild(mainContent);
     
     document.body.appendChild(videoDownloadPanel);
     makeDraggable(videoDownloadPanel, headerBar);
@@ -334,7 +339,7 @@ function createToggleButton() {
         } else {
             // Expand
             if (videosContainer) videosContainer.style.display = 'block';
-            if (infoContainer) infoContainer.style.display = 'block';
+            if (infoContainer) infoContainer.style.display = 'flex'; // Changed to flex
             if (searchSection) searchSection.style.display = 'flex';
             button.innerHTML = '▼'; // Down arrow for expanded state
             button.style.transform = 'rotate(0deg)';
@@ -351,21 +356,164 @@ function createToggleButton() {
     return button;
 }
 
-function createVideosContainer() {
+function createContentContainer() {
     const container = document.createElement('div');
-    container.id = videoLinksPanelId;
     Object.assign(container.style, {
         flex: '1',
-        overflowY: 'auto',
-        overflowX: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
         padding: '10px',
+        height: 'calc(90vh - 100px)', // Adjust based on header height
+        boxSizing: 'border-box',
+        overflow: 'hidden' // Ensure content doesn't overflow
+    });
+
+    // Create videos panel section
+    const videosSection = createVideosSection();
+    container.appendChild(videosSection);
+    
+    return container;
+}
+
+function createInfoSection() {
+    const container = document.createElement('div');
+    Object.assign(container.style, {
+        position: 'absolute',
+        right: '100%', // Position to the left of the main panel
+        top: '0',
+        height: '100%',
+        width: '20px',
+        display: 'flex',
+        flexDirection: 'row',
+        transition: 'width 0.3s ease',
+        overflow: 'hidden',
+        backgroundColor: '#f0f0f0',
+        borderRadius: '8px 0 0 8px', // Round left corners
+        boxShadow: '-2px 0 5px rgba(0,0,0,0.1)' // Add shadow on the left
+    });
+
+    // Create toggle button container
+    const toggleContainer = document.createElement('div');
+    Object.assign(toggleContainer.style, {
+        width: '20px',
+        minWidth: '20px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#f0f0f0',
+        cursor: 'pointer',
+        borderRight: '1px solid #dee2e6',
+        zIndex: '1'
+    });
+
+    const toggleButton = document.createElement('div');
+    Object.assign(toggleButton.style, {
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '10px',
+        padding: '10px 0',
+        userSelect: 'none',
+        color: '#666',
+        fontSize: '14px',
+        fontWeight: 'bold'
+    });
+
+    // Create info icon
+    const infoIcon = document.createElement('span');
+    infoIcon.textContent = 'ℹ';
+    Object.assign(infoIcon.style, {
+        fontSize: '14px'
+    });
+
+    // Create arrow
+    const arrow = document.createElement('span');
+    arrow.textContent = '►';
+    Object.assign(arrow.style, {
+        fontSize: '12px',
+        transition: 'transform 0.3s ease'
+    });
+
+    toggleButton.appendChild(infoIcon);
+    toggleButton.appendChild(arrow);
+
+    // Create info panel container
+    const infoPanelContainer = document.createElement('div');
+    Object.assign(infoPanelContainer.style, {
+        width: '300px',
+        minWidth: '300px',
+        display: 'flex',
+        flexDirection: 'column',
         backgroundColor: '#f8f9fa',
-        borderBottom: '1px solid #dee2e6'
+        borderRight: '1px solid #dee2e6'
+    });
+
+    // Create info panel
+    infoPanel = document.createElement('textarea');
+    infoPanel.id = infoPanelID;
+    Object.assign(infoPanel.style, {
+        flex: '1',
+        width: '100%',
+        height: '100%',
+        padding: '8px',
+        fontSize: '12px',
+        fontFamily: 'monospace',
+        border: 'none',
+        resize: 'none',
+        backgroundColor: '#f8f9fa',
+        boxSizing: 'border-box'
     });
     
-    // Add initial loading state
-    showLoadingState(container);
+    let isExpanded = false;
+    const toggleInfoPanel = () => {
+        isExpanded = !isExpanded;
+        container.style.width = isExpanded ? '320px' : '20px';
+        arrow.style.transform = isExpanded ? 'rotate(180deg)' : 'rotate(0deg)';
+    };
+
+    toggleContainer.addEventListener('click', toggleInfoPanel);
     
+    infoPanelContainer.appendChild(infoPanel);
+    toggleContainer.appendChild(toggleButton);
+    container.appendChild(toggleContainer);
+    container.appendChild(infoPanelContainer);
+    
+    // Observer to maintain textarea height when panel is expanded
+    const resizeObserver = new ResizeObserver(() => {
+        if (isExpanded) {
+            const containerHeight = container.clientHeight;
+            infoPanel.style.height = `${containerHeight}px`;
+        }
+    });
+    
+    resizeObserver.observe(container);
+    
+    return container;
+}
+
+function createVideosSection() {
+    const container = document.createElement('div');
+    Object.assign(container.style, {
+        flex: '1',
+        display: 'flex',
+        flexDirection: 'column',
+        overflowY: 'auto',
+        overflowX: 'hidden'
+    });
+
+    videoLinksPanel = document.createElement('div');
+    videoLinksPanel.id = videoLinksPanelId;
+    Object.assign(videoLinksPanel.style, {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '10px',
+        padding: '5px'
+    });
+
+    // Add initial loading state
+    showLoadingState(videoLinksPanel);
+    
+    container.appendChild(videoLinksPanel);
     return container;
 }
 
@@ -422,35 +570,6 @@ function clearLoadingState(container) {
     }
 }
 
-function createInfoContainer() {
-    const container = document.createElement('div');
-    Object.assign(container.style, {
-        padding: '10px',
-        width: '100%',
-        boxSizing: 'border-box',
-        borderTop: '1px solid #dee2e6'
-    });
-    
-    const infoPanel = document.createElement('textarea');
-    infoPanel.id = infoPanelID;
-    Object.assign(infoPanel.style, {
-        width: '100%',
-        height: '100px',
-        padding: '8px',
-        fontSize: '12px',
-        fontFamily: 'monospace',
-        border: '1px solid #dee2e6',
-        borderRadius: '4px',
-        resize: 'vertical',
-        backgroundColor: '#f8f9fa',
-        boxSizing: 'border-box', // This ensures padding is included in width
-        display: 'block'  // Ensures proper block layout
-    });
-    
-    container.appendChild(infoPanel);
-    return container;
-}
-
 function createSearchControl() {
     const container = document.createElement('div');
     container.style.display = 'flex';
@@ -478,40 +597,42 @@ function createSearchControl() {
     container.appendChild(button);
     container.appendChild(countdownText);
 
-    let countdown = INTERVALS.DEFAULT / 1000;
     let countdownInterval;
     
     function updateButtonState(isSearching) {
         if (isSearching) {
             button.textContent = 'Stop Searching';
-            button.style.backgroundColor = '#f44336';
+            button.style.backgroundColor = '#4CAF50'; // Green for active
+            
+            // Reset state when starting new search
+            rawVideoLinks.clear(); // Clear existing links to reset timer to 2s
+            hasStarted = false;    // Reset search state
+            
+            // Start new search cycle
+            stopSearchInterval(); // Clear any existing interval
+            checkForLinks(); // Immediate search
+            findPlayVideoInterval = setInterval(checkForLinks, INTERVALS.DEFAULT); // Always start with 2s interval
+            
             startCountdown();
         } else {
             button.textContent = 'Start Searching';
-            button.style.backgroundColor = '#4CAF50';
-            countdownText.textContent = '';
-            if (countdownInterval) {
-                clearInterval(countdownInterval);
-                countdownInterval = null;
-            }
+            button.style.backgroundColor = '#f44336'; // Red for inactive
+            stopSearchInterval();
+            stopCountdown();
         }
     }
 
     function startCountdown() {
-        // Clear any existing interval
         if (countdownInterval) {
             clearInterval(countdownInterval);
         }
 
-        // Reset countdown based on current state
-        countdown = rawVideoLinks.size > 0 ? 
-            INTERVALS.AFTER_FOUND / 1000 : 
-            INTERVALS.DEFAULT / 1000;
+        // Always start with DEFAULT interval (2s) when manually starting
+        let countdown = INTERVALS.DEFAULT / 1000;
 
         // Update immediately
         countdownText.textContent = `Next scan in ${countdown}s`;
 
-        // Start countdown
         countdownInterval = setInterval(() => {
             countdown--;
             if (countdown <= 0) {
@@ -519,30 +640,26 @@ function createSearchControl() {
                     INTERVALS.AFTER_FOUND / 1000 : 
                     INTERVALS.DEFAULT / 1000;
             }
-            countdownText.textContent = `Next scan in ${countdown}s`;
+            if (findPlayVideoInterval) { // Only update if search is active
+                countdownText.textContent = `Next scan in ${countdown}s`;
+            }
         }, 1000);
     }
 
-    button.addEventListener('click', () => {
-        if (findPlayVideoInterval) {
-            // Stop searching
-            clearInterval(findPlayVideoInterval);
-            findPlayVideoInterval = null;
-            updateButtonState(false);
-        } else {
-            // Start searching
-            checkForLinks(); // Immediate search
-            
-            // Set interval based on whether videos were found
-            const interval = rawVideoLinks.size > 0 ? INTERVALS.AFTER_FOUND : INTERVALS.DEFAULT;
-            findPlayVideoInterval = setInterval(checkForLinks, interval);
-            
-            updateButtonState(true);
+    function stopCountdown() {
+        if (countdownInterval) {
+            clearInterval(countdownInterval);
+            countdownInterval = null;
         }
+        countdownText.textContent = 'Search stopped';
+    }
+
+    button.addEventListener('click', () => {
+        updateButtonState(!findPlayVideoInterval);
     });
 
     // Set initial state
-    updateButtonState(!!findPlayVideoInterval);
+    updateButtonState(true);
     
     return container;
 }
@@ -688,7 +805,7 @@ function appendURL() {
             // Update countdown display
             const countdownText = document.getElementById('searchCountdown');
             if (countdownText) {
-                countdownText.textContent = `Searching in ${INTERVALS.AFTER_FOUND / 1000}s...`;
+                countdownText.textContent = `Next scan in ${INTERVALS.AFTER_FOUND / 1000}s`;
             }
         }
     } catch (error) {
@@ -736,18 +853,15 @@ function generateLinkButtons() {
     let buttonCounter = 0;
     appendLogText(`Generating buttons for ${rawVideoLinks.size} videos`, 'info');
 
-    // Get the videos container
     const videoLinksPanel = document.getElementById(videoLinksPanelId);
     if (!videoLinksPanel) {
         appendLogText('Video links panel not found', 'error');
         return;
     }
 
-    // Clear loading state and existing content
     clearLoadingState(videoLinksPanel);
     removeAllChildNodes(videoLinksPanel);
 
-    // If no videos found, show message
     if (rawVideoLinks.size === 0) {
         const noVideosMsg = document.createElement('div');
         Object.assign(noVideosMsg.style, {
@@ -764,29 +878,25 @@ function generateLinkButtons() {
     for (let [videoLink, quality] of rawVideoLinks) {
         buttonCounter++;
         
-        // Create container for video player and button
         const container = document.createElement('div');
         Object.assign(container.style, {
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'space-between', // Space between video and button
-            margin: '5px 0', // Remove horizontal margin
+            gap: '10px',
             padding: '8px',
             backgroundColor: '#f0f0f0',
             borderRadius: '5px',
-            width: '100%', // Full width of parent
-            boxSizing: 'border-box' // Include padding in width calculation
+            width: '100%',
+            boxSizing: 'border-box'
         });
 
-        // Create video player
         const videoContainer = document.createElement('div');
         Object.assign(videoContainer.style, {
             height: '100px',
-            width: '178px', // 16:9 aspect ratio for 100px height
-            marginRight: '10px',
+            width: '178px',
+            flexShrink: '0',
             position: 'relative',
-            overflow: 'hidden',
-            flexShrink: '0' // Prevent video from shrinking
+            overflow: 'hidden'
         });
 
         const video = document.createElement('video');
@@ -966,4 +1076,13 @@ function appendLogText(newLog, type = 'info') {
     } catch (error) {
         console.error('Logging failed:', error);
     }
+}
+
+// Add this function to handle all interval cleanup
+function stopSearchInterval() {
+    if (findPlayVideoInterval) {
+        clearInterval(findPlayVideoInterval);
+        findPlayVideoInterval = null;
+    }
+    hasStarted = false; // Reset the search state flag
 }

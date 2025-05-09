@@ -5,7 +5,7 @@
 // @version      0.1.0
 // @description  Simply get the odds
 // @author       Viet Cat
-// @match        https://*.viva88.com//*
+// @match        https://*.viva88.com/*
 // @grant        none
 // ==/UserScript==
 
@@ -22,12 +22,17 @@
             top: 20px;
             left: 20px;
             width: 300px;
+            min-width: 200px;
+            min-height: 150px;
             background: white;
             border: 1px solid #ccc;
             border-radius: 4px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
             z-index: 9999;
-            transition: all 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            will-change: transform;
+            box-sizing: border-box;
         `;
 
         // Create header bar
@@ -40,12 +45,31 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            user-select: none;
+            flex-shrink: 0;
+            box-sizing: border-box;
+            height: 24px;
+            line-height: 24px;
+        `;
+
+        // Create title container
+        const titleContainer = document.createElement('div');
+        titleContainer.style.cssText = `
+            display: flex;
+            align-items: center;
+            min-width: 0;
+            flex: 1;
         `;
 
         // Create title
         const title = document.createElement('span');
         title.textContent = 'Odds Collector';
-        title.style.fontWeight = 'bold';
+        title.style.cssText = `
+            font-weight: bold;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        `;
 
         // Create toggle button
         const toggleBtn = document.createElement('button');
@@ -56,97 +80,155 @@
             cursor: pointer;
             font-size: 16px;
             padding: 0 5px;
+            flex-shrink: 0;
+            margin-left: 8px;
         `;
 
-        // Create content area
-        const content = document.createElement('div');
-        content.style.cssText = `
+        // Create content wrapper
+        const contentWrapper = document.createElement('div');
+        contentWrapper.style.cssText = `
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            overflow: hidden;
+            box-sizing: border-box;
+        `;
+
+        // Create main content container
+        const mainContent = document.createElement('div');
+        mainContent.style.cssText = `
+            flex: 1;
             padding: 10px;
-            height: 200px;
             overflow-y: auto;
+            min-height: 0;
+            box-sizing: border-box;
         `;
 
         // Create log area
         const logArea = document.createElement('textarea');
         logArea.style.cssText = `
-            width: 100%;
+            width: calc(100% - 20px);
             height: 100px;
-            margin-top: 10px;
+            margin: 10px;
             padding: 5px;
             border: 1px solid #ccc;
             resize: none;
+            box-sizing: border-box;
+            flex-shrink: 0;
         `;
         logArea.readOnly = true;
 
+        // Create resize handle
+        const resizeHandle = document.createElement('div');
+        resizeHandle.style.cssText = `
+            position: absolute;
+            right: 0;
+            bottom: 0;
+            width: 10px;
+            height: 10px;
+            cursor: se-resize;
+            background: linear-gradient(135deg, transparent 50%, #ccc 50%);
+            z-index: 1;
+        `;
+
         // Assemble the popup
-        header.appendChild(title);
+        titleContainer.appendChild(title);
+        header.appendChild(titleContainer);
         header.appendChild(toggleBtn);
-        content.appendChild(logArea);
+        contentWrapper.appendChild(mainContent);
+        contentWrapper.appendChild(logArea);
         popup.appendChild(header);
-        popup.appendChild(content);
+        popup.appendChild(contentWrapper);
+        popup.appendChild(resizeHandle);
         document.body.appendChild(popup);
 
-        // Make popup draggable
+        // Store original dimensions
+        let originalWidth = 300;
+        let originalHeight = popup.offsetHeight;
+        const headerHeight = header.offsetHeight;
+
+        // Make popup draggable with improved performance
         let isDragging = false;
-        let currentX;
-        let currentY;
-        let initialX;
-        let initialY;
-        let xOffset = 0;
-        let yOffset = 0;
+        let startX, startY;
+        let startLeft, startTop;
 
-        header.addEventListener('mousedown', dragStart);
-        document.addEventListener('mousemove', drag);
-        document.addEventListener('mouseup', dragEnd);
-
-        function dragStart(e) {
-            initialX = e.clientX - xOffset;
-            initialY = e.clientY - yOffset;
-
-            if (e.target === header || e.target === title) {
+        header.addEventListener('mousedown', (e) => {
+            if (e.target === header || e.target === title || e.target === titleContainer) {
                 isDragging = true;
-            }
-        }
-
-        function drag(e) {
-            if (isDragging) {
+                startX = e.clientX;
+                startY = e.clientY;
+                const rect = popup.getBoundingClientRect();
+                startLeft = rect.left;
+                startTop = rect.top;
                 e.preventDefault();
-                currentX = e.clientX - initialX;
-                currentY = e.clientY - initialY;
-
-                xOffset = currentX;
-                yOffset = currentY;
-
-                setTranslate(currentX, currentY, popup);
             }
-        }
+        });
 
-        function dragEnd() {
-            initialX = currentX;
-            initialY = currentY;
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            
+            popup.style.left = `${startLeft + dx}px`;
+            popup.style.top = `${startTop + dy}px`;
+        });
+
+        document.addEventListener('mouseup', () => {
             isDragging = false;
-        }
+        });
 
-        function setTranslate(xPos, yPos, el) {
-            el.style.transform = `translate3d(${xPos}px, ${yPos}px, 0)`;
-        }
+        // Make popup resizable
+        let isResizing = false;
+        let startWidth, startHeight;
+
+        resizeHandle.addEventListener('mousedown', (e) => {
+            isResizing = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            startWidth = popup.offsetWidth;
+            startHeight = popup.offsetHeight;
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            
+            const newWidth = Math.max(200, startWidth + dx);
+            const newHeight = Math.max(150, startHeight + dy);
+            
+            popup.style.width = `${newWidth}px`;
+            popup.style.height = `${newHeight}px`;
+            
+            // Update original dimensions when resizing
+            originalWidth = newWidth;
+            originalHeight = newHeight;
+        });
+
+        document.addEventListener('mouseup', () => {
+            isResizing = false;
+        });
 
         // Toggle popup size
         let isCollapsed = false;
-        const originalHeight = popup.offsetHeight;
-        const headerHeight = header.offsetHeight;
 
         toggleBtn.addEventListener('click', () => {
             isCollapsed = !isCollapsed;
             if (isCollapsed) {
                 popup.style.height = `${headerHeight}px`;
                 popup.style.width = `${headerHeight * 3}px`;
-                content.style.display = 'none';
+                contentWrapper.style.display = 'none';
+                popup.style.minHeight = '0';
                 toggleBtn.textContent = '+';
             } else {
                 popup.style.height = `${originalHeight}px`;
-                popup.style.width = '300px';
-                content.style.display = 'block';
+                popup.style.width = `${originalWidth}px`;
+                popup.style.minHeight = '150px';
+                contentWrapper.style.display = 'flex';
                 toggleBtn.textContent = '−';
             }
         });

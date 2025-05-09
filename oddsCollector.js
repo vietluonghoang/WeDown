@@ -24,7 +24,7 @@
             width: 300px;
             min-width: 200px;
             min-height: 150px;
-            background: white;
+            background: #f0f8ff;
             border: 1px solid #ccc;
             border-radius: 4px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
@@ -39,7 +39,7 @@
         const header = document.createElement('div');
         header.style.cssText = `
             padding: 8px;
-            background: #f0f0f0;
+            background: linear-gradient(to right, #8B0000, #FF6B6B);
             border-bottom: 1px solid #ccc;
             cursor: move;
             display: flex;
@@ -50,6 +50,7 @@
             box-sizing: border-box;
             height: 24px;
             line-height: 24px;
+            color: white;
         `;
 
         // Create title container
@@ -69,6 +70,7 @@
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+            color: white;
         `;
 
         // Create toggle button
@@ -82,6 +84,7 @@
             padding: 0 5px;
             flex-shrink: 0;
             margin-left: 8px;
+            color: white;
         `;
 
         // Create content wrapper

@@ -12,6 +12,71 @@
 (function() {
     'use strict';
 
+    // Sample data structure
+    const sampleData = [
+        {
+            id: 1,
+            blocks: [
+                {
+                    name: "Match Info",
+                    detailNames: ["Team A", "Team B", "Time", "League"],
+                    details: [
+                        ["Liverpool", "Man City", "20:00", "Premier League"],
+                        ["Arsenal", "Chelsea", "21:00", "Premier League"],
+                        ["Man Utd", "Tottenham", "22:00", "Premier League"]
+                    ]
+                },
+                {
+                    name: "1X2 Odds",
+                    detailNames: ["1", "X", "2", "Time"],
+                    details: [
+                        ["1.85", "3.40", "4.20", "20:00"],
+                        ["2.10", "3.20", "3.50", "21:00"],
+                        ["1.95", "3.30", "4.00", "22:00"]
+                    ]
+                },
+                {
+                    name: "Over/Under",
+                    detailNames: ["Over", "Line", "Under", "Time"],
+                    details: [
+                        ["1.90", "2.5", "1.95", "20:00"],
+                        ["1.85", "3.0", "2.00", "21:00"],
+                        ["1.95", "2.0", "1.90", "22:00"]
+                    ]
+                }
+            ]
+        },
+        {
+            id: 2,
+            blocks: [
+                {
+                    name: "Match Info",
+                    detailNames: ["Team A", "Team B", "Time", "League"],
+                    details: [
+                        ["Barcelona", "Real Madrid", "20:30", "La Liga"],
+                        ["Atletico", "Sevilla", "21:30", "La Liga"]
+                    ]
+                },
+                {
+                    name: "1X2 Odds",
+                    detailNames: ["1", "X", "2", "Time"],
+                    details: [
+                        ["2.20", "3.30", "3.20", "20:30"],
+                        ["1.75", "3.50", "4.50", "21:30"]
+                    ]
+                },
+                {
+                    name: "Over/Under",
+                    detailNames: ["Over", "Line", "Under", "Time"],
+                    details: [
+                        ["1.95", "2.5", "1.90", "20:30"],
+                        ["2.05", "3.0", "1.80", "21:30"]
+                    ]
+                }
+            ]
+        }
+    ];
+
     // Create and initialize the floating popup
     function createFloatingPopup() {
         // Create main container
@@ -107,6 +172,118 @@
             min-height: 0;
             box-sizing: border-box;
         `;
+
+        // Create table
+        const table = document.createElement('table');
+        table.style.cssText = `
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            margin-bottom: 10px;
+        `;
+
+        // Create table header
+        const thead = document.createElement('thead');
+        thead.innerHTML = `
+            <tr>
+                <th style="width: 5%; border: 1px solid #ccc; padding: 4px;">#</th>
+                <th colspan="4" style="border: 1px solid #ccc; padding: 4px;">Block 1</th>
+                <th colspan="4" style="border: 1px solid #ccc; padding: 4px;">Block 2</th>
+                <th colspan="4" style="border: 1px solid #ccc; padding: 4px;">Block 3</th>
+                <th style="width: 5%; border: 1px solid #ccc; padding: 4px;"></th>
+            </tr>
+        `;
+        table.appendChild(thead);
+
+        // Create table body
+        const tbody = document.createElement('tbody');
+        
+        // Process each entity
+        sampleData.forEach((entity, entityIndex) => {
+            // Calculate total rows for this entity (block name + detail names + all detail rows)
+            const maxDetails = Math.max(...entity.blocks.map(block => block.details.length));
+            const totalRows = 2 + maxDetails; // 2 for block name and detail names rows
+            
+            // Create rows for this entity
+            for (let rowIndex = 0; rowIndex < totalRows; rowIndex++) {
+                const tr = document.createElement('tr');
+                
+                // Add order number (merged cell)
+                if (rowIndex === 0) {
+                    const td = document.createElement('td');
+                    td.textContent = entity.id;
+                    td.style.cssText = `
+                        border: 1px solid #ccc;
+                        padding: 4px;
+                        text-align: center;
+                        vertical-align: middle;
+                    `;
+                    td.rowSpan = totalRows;
+                    tr.appendChild(td);
+                }
+
+                // Add blocks
+                entity.blocks.forEach((block, blockIndex) => {
+                    if (rowIndex === 0) {
+                        // Block name row
+                        const td = document.createElement('td');
+                        td.textContent = block.name;
+                        td.style.cssText = `
+                            border: 1px solid #ccc;
+                            padding: 4px;
+                            text-align: center;
+                            background-color: #f8f9fa;
+                            font-weight: bold;
+                        `;
+                        td.colSpan = 4;
+                        tr.appendChild(td);
+                    } else if (rowIndex === 1) {
+                        // Detail names row
+                        block.detailNames.forEach(name => {
+                            const td = document.createElement('td');
+                            td.textContent = name;
+                            td.style.cssText = `
+                                border: 1px solid #ccc;
+                                padding: 4px;
+                                text-align: center;
+                                background-color: #f8f9fa;
+                            `;
+                            tr.appendChild(td);
+                        });
+                    } else {
+                        // Detail values rows
+                        const detailIndex = rowIndex - 2;
+                        const details = block.details[detailIndex] || ['', '', '', ''];
+                        details.forEach(value => {
+                            const td = document.createElement('td');
+                            td.textContent = value;
+                            td.style.cssText = `
+                                border: 1px solid #ccc;
+                                padding: 4px;
+                                text-align: center;
+                            `;
+                            tr.appendChild(td);
+                        });
+                    }
+                });
+
+                // Add empty column for future use
+                if (rowIndex === 0) {
+                    const td = document.createElement('td');
+                    td.style.cssText = `
+                        border: 1px solid #ccc;
+                        padding: 4px;
+                    `;
+                    td.rowSpan = totalRows;
+                    tr.appendChild(td);
+                }
+
+                tbody.appendChild(tr);
+            }
+        });
+
+        table.appendChild(tbody);
+        mainContent.appendChild(table);
 
         // Create log area
         const logArea = document.createElement('textarea');

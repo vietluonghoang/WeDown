@@ -131,29 +131,29 @@
                     // Process each odds group
                     for (let j = 0; j < oddsGroups.snapshotLength; j++) {
                         const oddsGroup = oddsGroups.snapshotItem(j);
-                        
+                        const matchHandi = getTextContent(xpathExpressions.matchOdd.handicapA, oddsGroup) === ""? getTextContent(xpathExpressions.matchOdd.handicapB, oddsGroup) : getTextContent(xpathExpressions.matchOdd.handicapA, oddsGroup);
                         // Extract and add match odds
                         matchInfo.details.push([
-                            "-EV-",
-                            getTextContent(xpathExpressions.matchOdd.handicapA, oddsGroup),
-                            getTextContent(xpathExpressions.matchOdd.teamAodd, oddsGroup),
-                            getTextContent(xpathExpressions.matchOdd.teamBodd, oddsGroup)
+                            ["-EV-",0],
+                            [matchHandi,0],
+                            [getTextContent(xpathExpressions.matchOdd.teamAodd, oddsGroup),getTextContent(xpathExpressions.matchOdd.handicapA, oddsGroup)===""?0:1],
+                            [getTextContent(xpathExpressions.matchOdd.teamBodd, oddsGroup),getTextContent(xpathExpressions.matchOdd.handicapB, oddsGroup)===""?0:1]
                         ]);
 
                         // Extract and add over/under odds
                         overUnder.details.push([
-                            "-EV-",
-                            getTextContent(xpathExpressions.overUnder.handicapA, oddsGroup),
-                            getTextContent(xpathExpressions.overUnder.teamAodd, oddsGroup),
-                            getTextContent(xpathExpressions.overUnder.teamBodd, oddsGroup)
+                            ["-EV-",0],
+                            [getTextContent(xpathExpressions.overUnder.handicapA, oddsGroup),0],
+                            [getTextContent(xpathExpressions.overUnder.teamAodd, oddsGroup),0],
+                            [getTextContent(xpathExpressions.overUnder.teamBodd, oddsGroup),0]
                         ]);
 
                         // Extract and add 1X2 odds
                         odds1X2.details.push([
-                            "-EV-",
-                            getTextContent(xpathExpressions.odds1X2.teamAodd, oddsGroup),
-                            getTextContent(xpathExpressions.odds1X2.teamBodd, oddsGroup),
-                            getTextContent(xpathExpressions.odds1X2.draw, oddsGroup)
+                            ["-EV-",0],
+                            [getTextContent(xpathExpressions.odds1X2.teamAodd, oddsGroup),0],
+                            [getTextContent(xpathExpressions.odds1X2.teamBodd, oddsGroup),0],
+                            [getTextContent(xpathExpressions.odds1X2.draw, oddsGroup),0]
                         ]);
                     }
 
@@ -249,7 +249,7 @@
                                 const details = block.details[detailIndex] || ['', '', '', ''];
                                 details.forEach(value => {
                                     const td = document.createElement('td');
-                                    td.textContent = value;
+                                    td.textContent = value[0];
                                     td.style.cssText = `
                                         border: 1px solid #ccc;
                                         padding: 4px;
@@ -258,6 +258,9 @@
                                         word-break: break-word;
                                         min-width: 60px;
                                     `;
+                                    if (value[1] == 1) {  // check the condition from data
+                                        td.style.backgroundColor = '#ffffe0';  // change the background color to light yellow
+                                    }
                                     tr.appendChild(td);
                                 });
                             }

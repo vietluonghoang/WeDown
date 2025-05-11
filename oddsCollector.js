@@ -77,40 +77,49 @@
         }
     ];
 
+    // Function to evaluate XPath and get text content
+    function getTextContent(xpath, context) {
+        const result = document.evaluate(xpath, context, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        let text = '';
+        for (let i = 0; i < result.snapshotLength; i++) {
+            text += result.snapshotItem(i).textContent.trim();
+        }
+        return text.trim();
+    }
+
     // Function to extract data from page using XPath
     function extractDataFromPage() {
         // Main XPath for finding match components
-        const mainXPath = "//div[@id='mainArea']/div[contains(@class, 'odds')]/div[contains(@class, 'c-odds-table')]/div[contains(@class, 'c-league')]/div[contains(@class, 'c-match-group')]/div[contains(@class, 'c-match')]";
+        const mainXPath = "//div[@id='mainArea']/div[contains(@class, 'odds')]/div[contains(@class, 'c-odds-table')]/div[contains(@class, 'c-league')]/div[contains(@class, 'c-match-group')]/div[contains(@class, 'c-match')]/div[contains(@class, 'bets')]/div[contains(@class, 'odds-group')]";
+        
+        // XPath for finding odds groups within a match
+        const oddsGroupXPath = "./div[contains(@class, 'odds')]";
         
         // XPath expressions for different data types
         const xpathExpressions = {
             matchInfo: {
-                teamA: ".//div[contains(@class, 'team-home')]//text()",
-                teamB: ".//div[contains(@class, 'team-away')]//text()",
-                time: ".//div[contains(@class, 'match-time')]//text()",
-                league: "ancestor::div[contains(@class, 'c-league')]//div[contains(@class, 'league-name')]//text()"
+                teamA: "./div[contains(@class, 'odds')][1]/div[contains(@class, 'event')]/div[contains(@class, 'team')][1]//text()",
+                teamB: "./div[contains(@class, 'odds')][1]/div[contains(@class, 'event')]/div[contains(@class, 'team')][2]//text()",
+                time: "parent::div/preceding-sibling::div[contains(@class, 'mathch-header')]/div[contains(@class, 'row-title')]/div[contains(@class, 'info')]//text()"
+            },
+            matchOdd: {
+                handicapA: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'text-goal')]//text()",
+                teamAodd: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'odds')]//text()",
+                handicapB: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'text-goal')]//text()",
+                teamBodd: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'odds')]//text()"
             },
             odds1X2: {
-                home: ".//div[contains(@class, 'odds-1x2')]//div[contains(@class, 'home')]//text()",
-                draw: ".//div[contains(@class, 'odds-1x2')]//div[contains(@class, 'draw')]//text()",
-                away: ".//div[contains(@class, 'odds-1x2')]//div[contains(@class, 'away')]//text()"
+                teamAodd: "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'odds')]//text()",
+                teamBodd: "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'odds')]//text()",
+                draw: "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][3]/span[contains(@class, 'odds')]//text()"
             },
             overUnder: {
-                over: ".//div[contains(@class, 'odds-ou')]//div[contains(@class, 'over')]//text()",
-                line: ".//div[contains(@class, 'odds-ou')]//div[contains(@class, 'line')]//text()",
-                under: ".//div[contains(@class, 'odds-ou')]//div[contains(@class, 'under')]//text()"
+                handicapA: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'text-goal')]//text()",
+                teamAodd: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'odds')]//text()",
+                handicapB: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'text-goal')]//text()",
+                teamBodd: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'odds')]//text()"
             }
         };
-
-        // Function to evaluate XPath and get text content
-        function getTextContent(xpath, context) {
-            const result = document.evaluate(xpath, context, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-            let text = '';
-            for (let i = 0; i < result.snapshotLength; i++) {
-                text += result.snapshotItem(i).textContent.trim();
-            }
-            return text.trim();
-        }
 
         // Get all match components
         const matches = document.evaluate(mainXPath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
@@ -121,46 +130,66 @@
         for (let i = 0; i < matches.snapshotLength; i++) {
             const match = matches.snapshotItem(i);
             
-            // Extract match info
+            // Get team names and time once per match
+            const teamA = getTextContent(xpathExpressions.matchInfo.teamA, match);
+            const teamB = getTextContent(xpathExpressions.matchInfo.teamB, match);
+            const matchTime = getTextContent(xpathExpressions.matchInfo.time, match);
+            
+            // Initialize blocks with empty details arrays
             const matchInfo = {
-                name: "Match Info",
-                detailNames: ["Team A", "Team B", "Time", "League"],
-                details: [[
-                    getTextContent(xpathExpressions.matchInfo.teamA, match),
-                    getTextContent(xpathExpressions.matchInfo.teamB, match),
-                    getTextContent(xpathExpressions.matchInfo.time, match),
-                    getTextContent(xpathExpressions.matchInfo.league, match)
-                ]]
+                name: "Kèo trận",
+                detailNames: ["EV", "Mốc kèo", teamA, teamB],
+                details: []
             };
 
-            // Extract 1X2 odds
-            const odds1X2 = {
-                name: "1X2 Odds",
-                detailNames: ["1", "X", "2", "Time"],
-                details: [[
-                    getTextContent(xpathExpressions.odds1X2.home, match),
-                    getTextContent(xpathExpressions.odds1X2.draw, match),
-                    getTextContent(xpathExpressions.odds1X2.away, match),
-                    getTextContent(xpathExpressions.matchInfo.time, match)
-                ]]
-            };
-
-            // Extract Over/Under odds
             const overUnder = {
-                name: "Over/Under",
-                detailNames: ["Over", "Line", "Under", "Time"],
-                details: [[
-                    getTextContent(xpathExpressions.overUnder.over, match),
-                    getTextContent(xpathExpressions.overUnder.line, match),
-                    getTextContent(xpathExpressions.overUnder.under, match),
-                    getTextContent(xpathExpressions.matchInfo.time, match)
-                ]]
+                name: "Kèo Tài Xỉu",
+                detailNames: ["EV", "Mốc kèo", "Tài", "Xỉu"],
+                details: []
             };
+
+            const odds1X2 = {
+                name: "Kèo 1X2",
+                detailNames: ["EV", teamA, teamB, "Hoà"],
+                details: []
+            };
+
+            // Get all odds groups for this match
+            const oddsGroups = document.evaluate(oddsGroupXPath, match, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+            
+            // Process each odds group
+            for (let j = 0; j < oddsGroups.snapshotLength; j++) {
+                const oddsGroup = oddsGroups.snapshotItem(j);
+                
+                // Extract and add match odds
+                matchInfo.details.push([
+                    "-EV-",
+                    getTextContent(xpathExpressions.matchOdd.handicapA, oddsGroup),
+                    getTextContent(xpathExpressions.matchOdd.teamAodd, oddsGroup),
+                    getTextContent(xpathExpressions.matchOdd.teamBodd, oddsGroup)
+                ]);
+
+                // Extract and add over/under odds
+                overUnder.details.push([
+                    "-EV-",
+                    getTextContent(xpathExpressions.overUnder.handicapA, oddsGroup),
+                    getTextContent(xpathExpressions.overUnder.teamAodd, oddsGroup),
+                    getTextContent(xpathExpressions.overUnder.teamBodd, oddsGroup)
+                ]);
+
+                // Extract and add 1X2 odds
+                odds1X2.details.push([
+                    "-EV-",
+                    getTextContent(xpathExpressions.odds1X2.teamAodd, oddsGroup),
+                    getTextContent(xpathExpressions.odds1X2.teamBodd, oddsGroup),
+                    getTextContent(xpathExpressions.odds1X2.draw, oddsGroup)
+                ]);
+            }
 
             // Add to extracted data
             extractedData.push({
                 id: currentId++,
-                blocks: [matchInfo, odds1X2, overUnder]
+                blocks: [matchInfo, overUnder, odds1X2]
             });
         }
 
@@ -391,8 +420,24 @@
             color: #ccc;
             min-width: 80px;
             text-align: right;
+            cursor: pointer;
+            user-select: none;
         `;
         refreshIndicator.textContent = 'Auto-refresh in: 5s';
+
+        // Add flashing animation style
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes flash {
+                0% { background: linear-gradient(to right, #8B0000, #FF6B6B); }
+                50% { background: linear-gradient(to right, #FF6B6B, #8B0000); }
+                100% { background: linear-gradient(to right, #8B0000, #FF6B6B); }
+            }
+            .flashing {
+                animation: flash 1s infinite;
+            }
+        `;
+        document.head.appendChild(style);
 
         // Create toggle button
         const toggleBtn = document.createElement('button');
@@ -598,6 +643,7 @@
 
         // Store refresh indicator reference
         window.oddsCollectorRefreshIndicator = refreshIndicator;
+        window.oddsCollectorHeader = header;
 
         return popup;
     }
@@ -613,19 +659,54 @@
         // Set up auto-refresh with countdown
         let timeLeft = 5;
         window.oddsCollectorInterval = 5; // Default interval
+        let refreshIntervalId = null;
+        let isPaused = false;
 
-        const refreshInterval = setInterval(() => {
-            timeLeft--;
-            if (timeLeft <= 0) {
-                refreshData();
-                timeLeft = window.oddsCollectorInterval;
+        function startRefreshInterval() {
+            if (refreshIntervalId) {
+                clearInterval(refreshIntervalId);
             }
-            window.oddsCollectorRefreshIndicator.textContent = `Auto-refresh in: ${timeLeft}s`;
-        }, 1000);
+            
+            refreshIntervalId = setInterval(() => {
+                if (!isPaused) {
+                    timeLeft--;
+                    if (timeLeft <= 0) {
+                        refreshData();
+                        timeLeft = window.oddsCollectorInterval;
+                    }
+                    window.oddsCollectorRefreshIndicator.textContent = `Auto-refresh in: ${timeLeft}s`;
+                }
+            }, 1000);
+        }
+
+        // Start initial interval
+        startRefreshInterval();
+
+        // Add click handler for refresh indicator
+        window.oddsCollectorRefreshIndicator.addEventListener('click', () => {
+            if (isPaused) {
+                // Resume refresh and trigger immediate refresh
+                isPaused = false;
+                window.oddsCollectorHeader.classList.remove('flashing');
+                refreshData(); // Immediate refresh
+                timeLeft = window.oddsCollectorInterval; // Reset timer
+                window.oddsCollectorRefreshIndicator.textContent = `Auto-refresh in: ${timeLeft}s`;
+                startRefreshInterval();
+                window.logToPopup('Auto-refresh resumed with immediate refresh');
+            } else {
+                // Pause refresh
+                isPaused = true;
+                window.oddsCollectorHeader.classList.add('flashing');
+                window.oddsCollectorRefreshIndicator.textContent = 'Auto-refresh is paused';
+                window.logToPopup('Auto-refresh paused');
+            }
+        });
 
         // Clean up interval when popup is closed
         window.addEventListener('unload', () => {
-            clearInterval(refreshInterval);
+            if (refreshIntervalId) {
+                clearInterval(refreshIntervalId);
+            }
         });
     });
 })();

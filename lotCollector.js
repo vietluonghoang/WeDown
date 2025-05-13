@@ -3,9 +3,9 @@
 // @name         Simple Data Collector
 // @namespace    http://tampermonkey.net/
 // @version      0.1.0
-// @description  Collects data sets with titles and content lists in a floating popup
+// @description  Collects data sets with titles and content lists in a floating popup, with pre-extraction form submission using a dynamic date at initialization
 // @author       Viet Cat
-// @match        https://ketqua04.net//*
+// @match        https://ketqua04.net/*
 // @grant        none
 // ==/UserScript==
 
@@ -18,6 +18,7 @@
  * - Pause/resume functionality
  * - Draggable and resizable popup
  * - Collapsible interface
+ * - Pre-extraction form submission at initialization with dynamic date
  */
 (function() {
     'use strict';
@@ -32,6 +33,27 @@
         window.dataCollectorInterval = 5;    // Default refresh interval
         let originalWidth = 300;             // Store original popup width
         let originalHeight = 0;              // Store original popup height
+
+        /**
+         * Helper function to create a delay
+         * @param {number} ms - Milliseconds to wait
+         * @returns {Promise} - Resolves after the specified delay
+         */
+        function delay(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        /**
+         * Helper function to format the current date as DD-MM-YYYY
+         * @returns {string} - Today's date in DD-MM-YYYY format
+         */
+        function getTodayDate() {
+            const today = new Date();
+            const day = String(today.getDate()).padStart(2, '0');
+            const month = String(today.getMonth() + 1).padStart(2, '0'); // Months are 0-based
+            const year = today.getFullYear();
+            return `${day}-${month}-${year}`;
+        }
 
         /**
          * Helper function to extract text content using XPath
@@ -54,39 +76,109 @@
         }
 
         /**
+         * Executes the pre-extraction form submission
+         * @param {string} date - Date to set in the datepicker (format: DD-MM-YYYY)
+         * @returns {Promise<boolean>} - Resolves to true if successful, false otherwise
+         */
+        async function executePreExtractionSnippet(date) {
+            try {
+                if (typeof jQuery === 'undefined') {
+                    window.logToPopup('jQuery not available, skipping pre-extraction snippet');
+                    return false;
+                }
+
+                if (!date || typeof date !== 'string' || !/^\d{2}-\d{2}-\d{4}$/.test(date)) {
+                    window.logToPopup('Invalid or missing date parameter, skipping pre-extraction snippet');
+                    return false;
+                }
+
+                const $ = jQuery;
+                let success = true;
+
+                // Update datepicker
+                if ($('#date').length) {
+                    $('#date').datepicker('update', date);
+                    window.logToPopup(`Datepicker updated to ${date}`);
+                } else {
+                    window.logToPopup('Datepicker element (#date) not found');
+                    success = false;
+                }
+
+                // Set count value
+                if ($('#count').length) {
+                    $('#count').val(365);
+                    window.logToPopup('Count input set to 365');
+                } else {
+                    window.logToPopup('Count input (#count) not found');
+                    success = false;
+                }
+
+                // Click submit button
+                const submitButton = document.querySelector('#so-ket-qua button[type="submit"]');
+                if (submitButton) {
+                    submitButton.click();
+                    window.logToPopup('Submit button clicked');
+                } else {
+                    window.logToPopup('Submit button (#so-ket-qua button[type="submit"]) not found');
+                    success = false;
+                }
+
+                // Wait for page to update (adjustable delay)
+                await delay(2000); // 2-second delay to allow page update
+
+                return success;
+            } catch (error) {
+                console.error('Data Collector: Error in executePreExtractionSnippet:', error);
+                window.logToPopup(`Error in pre-extraction snippet: ${error.message}`);
+                return false;
+            }
+        }
+
+        /**
          * Extracts data sets from the page using XPath
          * @returns {Array} - Array of data sets with title and content
          */
-        function extractDataFromPage() {
+        async function extractDataFromPage() {
             try {
                 console.log('Data Collector: Starting data extraction...');
+
                 // Main XPath for finding match components
-                const mainXPath = "//div[@id='mainArea']/div[contains(@class, 'odds')]/div[contains(@class, 'c-odds-table')]/div[contains(@class, 'c-league')]/div[contains(@class, 'c-match-group')]/div[contains(@class, 'c-match')]";
+                const mainXPath = "//div[contains(@class, 'kqbackground viento')]/div[contains(@class, 'panel-default')]/div[contains(@class, 'panel-body')]/div[contains(@class, 'kqbackground')]";
                 
                 // XPath expressions for data
                 const xpathExpressions = {
-                    title: "./div[contains(@class, 'mathch-header')]/div[contains(@class, 'row-title')]/div[contains(@class, 'info')]//text() | ./div[contains(@class, 'bets')]/div[contains(@class, 'odds-group')]/div[contains(@class, 'odds')][1]/div[contains(@class, 'event')]/div[contains(@class, 'team')]//text()",
-                    content: "./div[contains(@class, 'bets')]/div[contains(@class, 'odds-group')]/div[contains(@class, 'odds')]//span[contains(@class, 'odds') or contains(@class, 'text-goal')]//text()"
+                    title: "./div[@id = 'outer_result_mb']/div[@id = 'result_mb']/div[contains(@class, 'row')]/div[contains(@class, 'col-sm-6')]/div/table/thead//text()",
+                    content: "./div[@id = 'outer_result_mb']/div[@id = 'result_mb']/div[contains(@class, 'row')]/div[2]/table/tbody/tr/td[2]"
                 };
 
                 // Get all match components
-                const matches = document.evaluate(mainXPath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                const days = document.evaluate(mainXPath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
                 const extractedData = [];
                 let currentId = 1;
 
                 // Process each match
-                for (let i = 0; i < matches.snapshotLength; i++) {
-                    const match = matches.snapshotItem(i);
+                for (let i = 0; i < days.snapshotLength; i++) {
+                    const day = days.snapshotItem(i);
                     
                     // Get title (combine team names and time)
-                    const titleParts = getTextContent(xpathExpressions.title, match).split(/\s+/).filter(part => part);
+                    const titleParts = getTextContent(xpathExpressions.title, day).split(/\s+/).filter(part => part);
                     const title = titleParts.join(' ').trim();
                     
                     // Get content (all odds and handicaps)
-                    const contentNodes = document.evaluate(xpathExpressions.content, match, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                    const contentNodes = document.evaluate(xpathExpressions.content, day, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
                     const content = [];
                     for (let j = 0; j < contentNodes.snapshotLength; j++) {
-                        const value = contentNodes.snapshotItem(j).textContent.trim();
+                        let value = contentNodes.snapshotItem(j).textContent.trim();
+
+                        //check if content has highlighted text, then replace it with markers
+                        const highlightedContent = document.evaluate("./span[contains(@class, 'maudo')]", contentNodes.snapshotItem(j), null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                        if (highlightedContent.snapshotLength > 0) {
+                            for (let k = 0; k < highlightedContent.snapshotLength; k++) {
+                                const pattern = new RegExp(`\\b(${highlightedContent.snapshotItem(k).textContent.trim()})\\b`, 'gi');
+                                value = value.replace(pattern, "(" + highlightedContent.snapshotItem(k).textContent.trim() + ")");
+                            }
+                        }
+
                         if (value) content.push(value);
                     }
 
@@ -101,6 +193,7 @@
                 return extractedData;
             } catch (error) {
                 console.error('Data Collector: Error in extractDataFromPage:', error);
+                window.logToPopup(`Error extracting data: ${error.message}`);
                 return [];
             }
         }
@@ -115,26 +208,30 @@
                 console.log('Data Collector: Updating table with data...');
                 // Clear existing table body
                 tbody.innerHTML = '';
-                
+
                 // Process each data set
                 data.forEach((dataSet) => {
-                    const tr = document.createElement('tr');
-                    
-                    // Add ID column
+                    const totalRows = 1 + dataSet.content.length; // 1 title + N content
+
+                    // Row 1: ID (rowspan), and Title
+                    const trTitle = document.createElement('tr');
+
+                    // ID column with rowspan
                     const idTd = document.createElement('td');
                     idTd.textContent = dataSet.id;
+                    idTd.rowSpan = totalRows;
                     idTd.style.cssText = `
                         border: 1px solid #ccc;
                         padding: 4px;
                         text-align: center;
-                        vertical-align: middle;
+                        vertical-align: top;
                         word-wrap: break-word;
                         word-break: break-word;
                         min-width: 30px;
                     `;
-                    tr.appendChild(idTd);
+                    trTitle.appendChild(idTd);
 
-                    // Add title column
+                    // Title cell
                     const titleTd = document.createElement('td');
                     titleTd.textContent = dataSet.title;
                     titleTd.style.cssText = `
@@ -143,24 +240,29 @@
                         text-align: left;
                         word-wrap: break-word;
                         word-break: break-word;
-                        min-width: 100px;
+                        min-width: 200px;
+                        font-weight: bold;
                     `;
-                    tr.appendChild(titleTd);
+                    trTitle.appendChild(titleTd);
 
-                    // Add content column
-                    const contentTd = document.createElement('td');
-                    contentTd.textContent = dataSet.content.join(', ');
-                    contentTd.style.cssText = `
-                        border: 1px solid #ccc;
-                        padding: 4px;
-                        text-align: left;
-                        word-wrap: break-word;
-                        word-break: break-word;
-                        min-width: 150px;
-                    `;
-                    tr.appendChild(contentTd);
+                    tbody.appendChild(trTitle);
 
-                    tbody.appendChild(tr);
+                    // Add content rows (each one is its own row under the title)
+                    dataSet.content.forEach((contentItem) => {
+                        const trContent = document.createElement('tr');
+                        const contentTd = document.createElement('td');
+                        contentTd.textContent = contentItem;
+                        contentTd.style.cssText = `
+                            border: 1px solid #ccc;
+                            padding: 4px;
+                            text-align: left;
+                            word-wrap: break-word;
+                            word-break: break-word;
+                            min-width: 200px;
+                        `;
+                        trContent.appendChild(contentTd);
+                        tbody.appendChild(trContent);
+                    });
                 });
 
                 // Adjust popup width based on table content
@@ -203,10 +305,10 @@
          * Main refresh function - extracts and updates data
          * Also manages refresh interval based on results
          */
-        function refreshData() {
+        async function refreshData() {
             try {
                 console.log('Data Collector: Refreshing data...');
-                const extractedData = extractDataFromPage();
+                const extractedData = await extractDataFromPage();
                 updateTableWithData(extractedData, window.dataCollectorTbody);
                 
                 // Update interval based on data results
@@ -405,7 +507,6 @@
                     <tr>
                         <th style="width: 5%; border: 1px solid #ccc; padding: 4px; word-wrap: break-word; word-break: break-word; min-width: 30px;">#</th>
                         <th style="width: 30%; border: 1px solid #ccc; padding: 4px; word-wrap: break-word; word-break: break-word; min-width: 100px;">Title</th>
-                        <th style="width: 65%; border: 1px solid #ccc; padding: 4px; word-wrap: break-word; word-break: break-word; min-width: 150px;">Content</th>
                     </tr>
                 `;
                 table.appendChild(thead);
@@ -579,7 +680,7 @@
                     }
                 });
 
-                // Add click handler for العلامة المرجعية
+                // Add click handler for refresh indicator
                 refreshIndicator.addEventListener('click', () => {
                     try {
                         if (isPaused) {
@@ -641,15 +742,19 @@
         }
 
         // Initialize popup when page loads
-        window.addEventListener('load', () => {
+        window.addEventListener('load', async () => {
             try {
                 console.log('Data Collector: Page loaded, initializing...');
                 const popup = createFloatingPopup();
                 document.body.appendChild(popup);
                 window.logToPopup('Data Collector initialized');
-                
+
+                // Execute pre-extraction snippet once with today's date
+                // const todayDate = getTodayDate();
+                // await executePreExtractionSnippet(todayDate);
+
                 // Initial data extraction
-                refreshData();
+                await refreshData();
 
                 // Start initial interval
                 startRefreshInterval();
@@ -662,6 +767,7 @@
                 });
             } catch (error) {
                 console.error('Data Collector: Error in initialization:', error);
+                window.logToPopup(`Initialization error: ${error.message}`);
             }
         });
 

@@ -34,6 +34,21 @@
         let originalWidth = 300;             // Store original popup width
         let originalHeight = 0;              // Store original popup height
 
+        //Global variables for sheets
+        const CLIENT_ID = 'YOUR_CLIENT_ID_HERE';
+        const API_KEY = 'YOUR_API_KEY_HERE'; // optional, can be left blank if only using OAuth
+        const DISCOVERY_DOCS = [
+        "https://sheets.googleapis.com/$discovery/rest?version=v4"
+        ];
+        const SCOPES = "https://www.googleapis.com/auth/spreadsheets";
+        const spreadsheetId = 'YOUR_SPREADSHEET_ID';
+        const range = 'Sheet1!A1';
+        const valueInputOption = 'RAW';
+
+        let tokenClient;
+        let gapiInited = false;
+        let gisInited = false;
+
         /**
          * Helper function to create a delay
          * @param {number} ms - Milliseconds to wait
@@ -302,7 +317,7 @@
                 window.logToPopup('Data Collector: Updating table with data...');
                 // Clear existing table body
                 tbody.innerHTML = '';
-
+                let values = [];
                 // Process each data set
                 data.forEach((dataSet) => {
                     const totalRows = 1 + dataSet.content.length; // 1 title + N content
@@ -328,6 +343,7 @@
                     // Title cell
                     const titleTd = document.createElement('td');
                     let title = convertDateFormat(extractDate(dataSet.title))
+                    values.push(title); //add info into values array for updating to Gooogle sheet later 
                     titleTd.textContent = title;
                     titleTd.style.cssText = `
                         border: 1px solid #ccc;
@@ -347,6 +363,7 @@
                         const trContent = document.createElement('tr');
                         const contentTd = document.createElement('td');
                         contentTd.textContent = contentItem;
+                        values.push(contentItem); //add info into values array for updating to Gooogle sheet later 
                         contentTd.style.cssText = `
                             border: 1px solid #ccc;
                             padding: 4px;
@@ -391,6 +408,7 @@
                         window.logToPopup(`Popup width adjusted to ${newWidth}px`);
                     }
                 }
+                updateSheet(values);
             } catch (error) {
                 window.logToPopup('Data Collector: Error in updateTableWithData:\n' + error);
             }
@@ -837,9 +855,61 @@
             }
         }
 
+        // Load gapi and init
+        function gapiLoaded() {
+            gapi.load('client', initializeGapiClient);
+        }
+
+        async function initializeGapiClient() {
+            await gapi.client.init({
+                apiKey: API_KEY,
+                discoveryDocs: DISCOVERY_DOCS,
+            });
+            gapiInited = true;
+        }
+
+        // Hàm cập nhật Google Sheet
+        async function updateSheet(values) {
+
+            const body = {
+                values: values,
+            };
+
+            try {
+                const response = await gapi.client.sheets.spreadsheets.values.update({
+                spreadsheetId: spreadsheetId,
+                range: range,
+                valueInputOption: valueInputOption,
+                resource: body,
+                });
+                console.log('Cells updated:', response);
+            } catch (err) {
+                console.error('Error updating sheet:', err);
+            }
+        }
+
+
         // Initialize popup when page loads
         window.addEventListener('load', async () => {
             try {
+
+                gapiLoaded();
+
+                // Init Google Identity Services
+                tokenClient = google.accounts.oauth2.initTokenClient({
+                    client_id: CLIENT_ID,
+                    scope: SCOPES,
+                    callback: '', // set in requestAccessToken
+                });
+                tokenClient.callback = async (resp) => {
+                    if (resp.error !== undefined) {
+                      throw resp;
+                    }
+                    console.log('Successfully authorized!');
+                  };
+                
+                tokenClient.requestAccessToken({ prompt: 'consent' });
+
                 console.log('Data Collector: Page loaded, initializing...');
                 const popup = createFloatingPopup();
                 document.body.appendChild(popup);

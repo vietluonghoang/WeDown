@@ -44,6 +44,102 @@
         }
 
         /**
+         * Helper function to extract date text
+         * @param {String} text - Text that contains date (in dd-mm-yyyy format)
+         * @returns {String} - Extracted date in dd-mm-yyyy format
+         */
+        function extractDate(text) {
+            const match = text.match(/\b\d{2}-\d{2}-\d{4}\b/);
+            return match ? match[0] : null;
+        }
+        
+        /**
+         * Helper function to calculate new date with offset
+         * @param {String} dateStr - Date in dd-mm-yyyy format
+         * @param {String} offsetDays - Number of days to offset (positive number to offset forward, negative number to offset backward)
+         * @returns {String} - New date with offset
+         */
+        function offsetDate(dateStr, offsetDays) {
+            // Validate input format
+            if (!/^\d{2}-\d{2}-\d{4}$/.test(dateStr)) {
+                return "Invalid date format. Use dd-mm-yyyy";
+            }
+            
+            // Parse input date
+            const [day, month, year] = dateStr.split('-').map(Number);
+            
+            // Create Date object (month is 0-based in JS)
+            const date = new Date(year, month - 1, day);
+            
+            // Check if date is valid
+            if (isNaN(date.getTime())) {
+                return "Invalid date";
+            }
+            
+            // Add offset days
+            date.setDate(date.getDate() + Number(offsetDays));
+            
+            // Format output
+            const newDay = String(date.getDate()).padStart(2, '0');
+            const newMonth = String(date.getMonth() + 1).padStart(2, '0');
+            const newYear = date.getFullYear();
+            
+            return `${newDay}-${newMonth}-${newYear}`;
+        }
+
+        /**
+         * Helper function to convert date format
+         * @param {String} dateStr - Date in either dd-mm-yyyy or Ddd/Mmm/yyyy format
+         * @returns {String} - New date format (either dd-mm-yyyy or Ddd/Mmm/yyyy format)
+         */
+        function convertDateFormat(dateStr) {
+            // Check if input is dd-mm-yyyy format
+            if (/^\d{2}-\d{2}-\d{4}$/.test(dateStr)) {
+                // Parse input date
+                const [day, month, year] = dateStr.split('-').map(Number);
+        
+                // Create Date object (month is 0-based in JS)
+                const date = new Date(year, month - 1, day);
+        
+                // Check if date is valid
+                if (isNaN(date.getTime())) {
+                    return "Invalid date";
+                }
+        
+                // Convert to Ddd/Mmm/yyyy (e.g., D15/M06/2025)
+                const formattedDay = `D${String(day).padStart(2, '0')}`;
+                const formattedMonth = `M${String(month).padStart(2, '0')}`;
+        
+                return `${formattedDay}/${formattedMonth}/${year}`;
+            }
+            // Check if input is Ddd/Mmm/yyyy format (e.g., D15/M06/2025)
+            else if (/^D\d{2}\/M\d{2}\/\d{4}$/.test(dateStr)) {
+                // Parse input date
+                const [dayPart, monthPart, year] = dateStr.split('/');
+                const day = parseInt(dayPart.slice(1)); // Remove 'D' prefix
+                const month = parseInt(monthPart.slice(1)); // Remove 'M' prefix
+        
+                // Create Date object
+                const date = new Date(year, month - 1, day);
+        
+                // Check if date is valid
+                if (isNaN(date.getTime())) {
+                    return "Invalid date";
+                }
+        
+                // Convert to dd-mm-yyyy
+                const formattedDay = String(day).padStart(2, '0');
+                const formattedMonth = String(month).padStart(2, '0');
+        
+                return `${formattedDay}-${formattedMonth}-${year}`;
+            }
+            // Invalid format
+            else {
+                return "Invalid date format. Use dd-mm-yyyy or Ddd/Mmm/yyyy (e.g., 15-06-2025 or D15/M06/2025)";
+            }
+        }
+
+        /**
          * Helper function to format the current date as DD-MM-YYYY
          * @returns {string} - Today's date in DD-MM-YYYY format
          */
@@ -70,7 +166,7 @@
                 }
                 return text.trim();
             } catch (error) {
-                console.error('Data Collector: Error in getTextContent:', error);
+                window.logToPopup('Data Collector: Error in getTextContent:\n' + error);
                 return '';
             }
         }
@@ -128,7 +224,6 @@
 
                 return success;
             } catch (error) {
-                console.error('Data Collector: Error in executePreExtractionSnippet:', error);
                 window.logToPopup(`Error in pre-extraction snippet: ${error.message}`);
                 return false;
             }
@@ -140,7 +235,7 @@
          */
         async function extractDataFromPage() {
             try {
-                console.log('Data Collector: Starting data extraction...');
+                window.logToPopup('Data Collector: Starting data extraction...');
 
                 // Main XPath for finding match components
                 const mainXPath = "//div[contains(@class, 'kqbackground viento')]/div[contains(@class, 'panel-default')]/div[contains(@class, 'panel-body')]/div[contains(@class, 'kqbackground')]";
@@ -192,7 +287,6 @@
 
                 return extractedData;
             } catch (error) {
-                console.error('Data Collector: Error in extractDataFromPage:', error);
                 window.logToPopup(`Error extracting data: ${error.message}`);
                 return [];
             }
@@ -205,7 +299,7 @@
          */
         function updateTableWithData(data, tbody) {
             try {
-                console.log('Data Collector: Updating table with data...');
+                window.logToPopup('Data Collector: Updating table with data...');
                 // Clear existing table body
                 tbody.innerHTML = '';
 
@@ -233,7 +327,8 @@
 
                     // Title cell
                     const titleTd = document.createElement('td');
-                    titleTd.textContent = dataSet.title;
+                    let title = convertDateFormat(extractDate(dataSet.title))
+                    titleTd.textContent = title;
                     titleTd.style.cssText = `
                         border: 1px solid #ccc;
                         padding: 4px;
@@ -297,7 +392,7 @@
                     }
                 }
             } catch (error) {
-                console.error('Data Collector: Error in updateTableWithData:', error);
+                window.logToPopup('Data Collector: Error in updateTableWithData:\n' + error);
             }
         }
 
@@ -307,7 +402,7 @@
          */
         async function refreshData() {
             try {
-                console.log('Data Collector: Refreshing data...');
+                window.logToPopup('Data Collector: Refreshing data...');
                 const extractedData = await extractDataFromPage();
                 updateTableWithData(extractedData, window.dataCollectorTbody);
                 
@@ -322,7 +417,6 @@
                 
                 window.logToPopup(`Successfully extracted ${extractedData.length} data sets at ${new Date().toLocaleTimeString()}`);
             } catch (error) {
-                console.error('Data Collector: Error in refreshData:', error);
                 window.logToPopup(`Error extracting data: ${error.message}`);
             }
         }
@@ -652,8 +746,10 @@
                 // Add logging function
                 window.logToPopup = function(message) {
                     const timestamp = new Date().toLocaleTimeString();
-                    logArea.value += `[${timestamp}] ${message}\n`;
+                    let logMessage = `[${timestamp}] ${message}\n`;
+                    logArea.value += logMessage;
                     logArea.scrollTop = logArea.scrollHeight;
+                    console.log(logMessage);
                 };
 
                 // Store tbody reference
@@ -676,7 +772,7 @@
                         }, 1000);
                         window.logToPopup('Manual refresh triggered');
                     } catch (error) {
-                        console.error('Data Collector: Error in refresh button click:', error);
+                        window.logToPopup('Data Collector: Error in refresh button click:\n' + error);
                     }
                 });
 
@@ -702,7 +798,7 @@
                             window.logToPopup('Auto-refresh paused');
                         }
                     } catch (error) {
-                        console.error('Data Collector: Error in refresh indicator click:', error);
+                        window.logToPopup('Data Collector: Error in refresh indicator click:\n' + error);
                     }
                 });
 
@@ -737,7 +833,7 @@
                     }
                 }, 1000);
             } catch (error) {
-                console.error('Data Collector: Error in startRefreshInterval:', error);
+                window.logToPopup('Data Collector: Error in startRefreshInterval:\n' + error);
             }
         }
 
@@ -767,7 +863,6 @@
                 });
             } catch (error) {
                 console.error('Data Collector: Error in initialization:', error);
-                window.logToPopup(`Initialization error: ${error.message}`);
             }
         });
 

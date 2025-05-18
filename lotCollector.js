@@ -6,7 +6,9 @@
 // @description  Collects data sets with titles and content lists in a floating popup, with pre-extraction form submission using a dynamic date at initialization
 // @author       Viet Cat
 // @match        https://ketqua04.net/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      script.google.com
+// @connect      script.googleusercontent.com
 // ==/UserScript==
 
 /**
@@ -48,6 +50,8 @@
         let tokenClient;
         let gapiInited = false;
         let gisInited = false;
+
+        const SHEET_API_BASE_URL = "https://script.google.com/macros/s/AKfycbxuDJA_Y4Ht_JBQF_wL0vrz6FP-2r3Izf7lIVXyvE1hTmqDHQRcRLnGbY_dfwut8gec/exec";
 
         /**
          * Helper function to create a delay
@@ -408,7 +412,7 @@
                         window.logToPopup(`Popup width adjusted to ${newWidth}px`);
                     }
                 }
-                updateSheet(values);
+                // updateSheet(values);
             } catch (error) {
                 window.logToPopup('Data Collector: Error in updateTableWithData:\n' + error);
             }
@@ -877,10 +881,10 @@
 
             try {
                 const response = await gapi.client.sheets.spreadsheets.values.update({
-                spreadsheetId: spreadsheetId,
-                range: range,
-                valueInputOption: valueInputOption,
-                resource: body,
+                    spreadsheetId: spreadsheetId,
+                    range: range,
+                    valueInputOption: valueInputOption,
+                    resource: body,
                 });
                 console.log('Cells updated:', response);
             } catch (err) {
@@ -888,27 +892,111 @@
             }
         }
 
+         /**
+         * Ghi dữ liệu vào Google Sheet
+         * @param {Object} valuesArray - Dữ liệu dạng object, ví dụ: { name: "Nguyễn", score: 95 }
+         * @param {String} sheetName - Tên sheet được ghi
+         */
+        function writeToSheet(rows, sheetName = "Sheet1") {
+            if (!Array.isArray(rows) || !Array.isArray(rows[0])) {
+              console.error("❌ Dữ liệu sai định dạng! Cần mảng 2 chiều.");
+              return;
+            }
+          
+            GM_xmlhttpRequest({
+              method: "POST",
+              url: `${SHEET_API_BASE_URL}?sheet=${encodeURIComponent(sheetName)}`,
+              headers: {
+                "Content-Type": "application/json"
+              },
+              data: JSON.stringify({
+                values: rows
+              }),
+              onload: function (response) {
+                try {
+                  const result = JSON.parse(response.responseText);
+                  if (result.status === "success") {
+                    console.log(`✅ Đã ghi ${result.rows_written} dòng vào sheet ${sheetName}`);
+                  } else {
+                    console.error("❌ Ghi lỗi:", result.message);
+                  }
+                } catch (err) {
+                  console.error("❌ Lỗi khi parse kết quả:", err);
+                }
+              },
+              onerror: function (err) {
+                console.error("❌ Lỗi gọi API ghi dữ liệu:", err);
+              }
+            });
+        }                  
+
+        /**
+         * Đọc dữ liệu từ Google Sheet qua Apps Script
+         * @param {string} sheetName - Tên sheet cần đọc (bắt buộc nếu dùng range)
+         * @param {string} range - Phạm vi cần đọc (ví dụ: "A2:D5")
+         * @returns {Promise<any>} Dữ liệu JSON từ Apps Script
+         */
+        function readFromSheet(sheetName = "", range = "") {
+            // Tạo URL với tham số nếu có
+            let url = SHEET_API_BASE_URL;
+            const params = [];
+            if (sheetName) params.push(`sheet=${encodeURIComponent(sheetName)}`);
+            if (range) params.push(`range=${encodeURIComponent(range)}`);
+            if (params.length > 0) url += `?${params.join("&")}`;
+
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: "GET",
+                    url: url,
+                    onload: function (response) {
+                        try {
+                            const data = JSON.parse(response.responseText);
+                            console.log("✅ Dữ liệu đọc được từ Sheet:", data);
+                            resolve(data);
+                        } catch (err) {
+                            console.error("❌ Lỗi parse dữ liệu:", err);
+                            reject(err);
+                        }
+                    },
+                    onerror: function (err) {
+                        console.error("❌ Lỗi fetch Sheet:", err);
+                        reject(err);
+                    }
+                });
+            });
+        }  
 
         // Initialize popup when page loads
         window.addEventListener('load', async () => {
             try {
 
-                gapiLoaded();
+                // gapiLoaded();
 
-                // Init Google Identity Services
-                tokenClient = google.accounts.oauth2.initTokenClient({
-                    client_id: CLIENT_ID,
-                    scope: SCOPES,
-                    callback: '', // set in requestAccessToken
-                });
-                tokenClient.callback = async (resp) => {
-                    if (resp.error !== undefined) {
-                      throw resp;
-                    }
-                    console.log('Successfully authorized!');
-                  };
+                // // Init Google Identity Services
+                // tokenClient = google.accounts.oauth2.initTokenClient({
+                //     client_id: CLIENT_ID,
+                //     scope: SCOPES,
+                //     callback: '', // set in requestAccessToken
+                // });
+                // tokenClient.callback = async (resp) => {
+                //     if (resp.error !== undefined) {
+                //       throw resp;
+                //     }
+                //     console.log('Successfully authorized!');
+                //   };
                 
-                tokenClient.requestAccessToken({ prompt: 'consent' });
+                // tokenClient.requestAccessToken({ prompt: 'consent' });
+
+                writeToSheet([
+                    ["Hà Nội", "2025-05-18", "Giải đặc biệt", "123456"],
+                    ["TP.HCM", "2025-05-18", "Giải nhất", "654321"]
+                  ], "chat");
+                  
+
+                // Đọc từ sheet "chat" và vùng A2:D5
+                readFromSheet("chat", "A2:D")
+                    .then(data => console.log("📋 Dữ liệu:", data))
+                    .catch(err => console.error("❌ Lỗi:", err));
 
                 console.log('Data Collector: Page loaded, initializing...');
                 const popup = createFloatingPopup();

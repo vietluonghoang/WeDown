@@ -53,6 +53,10 @@
 
         const SHEET_API_BASE_URL = "https://script.google.com/macros/s/AKfycbxuDJA_Y4Ht_JBQF_wL0vrz6FP-2r3Izf7lIVXyvE1hTmqDHQRcRLnGbY_dfwut8gec/exec";
 
+        let minDateTimestamp = 0; //store the earliest date in the data
+        let maxDateTimestamp = 0; //store the latest date in the data
+        let values = []; //dataset of all results found on page
+
         /**
          * Helper function to create a delay
          * @param {number} ms - Milliseconds to wait
@@ -60,6 +64,18 @@
          */
         function delay(ms) {
             return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        /**
+         * Helper function to format the current date as DD-MM-YYYY
+         * @returns {string} - Today's date in DD-MM-YYYY format
+         */
+        function getTodayDate() {
+            const today = new Date();
+            const day = String(today.getDate()).padStart(2, '0');
+            const month = String(today.getMonth() + 1).padStart(2, '0'); // Months are 0-based
+            const year = today.getFullYear();
+            return `${day}-${month}-${year}`;
         }
 
         /**
@@ -72,6 +88,30 @@
             return match ? match[0] : null;
         }
         
+        /**
+         * Helper function to get Unix UTC timestamp
+         * @param {String} dateStr - Text that contains date (in dd-mm-yyyy format)
+         * @returns {int} - UTC Unix timestamp
+         */
+        function getUnixUTCTimestamp(dateStr) {
+            const [day, month, year] = dateStr.split('-').map(Number);
+            const date = new Date(Date.UTC(year, month - 1, day)); // month is 0-indexed
+            return Math.floor(date.getTime() / 1000); // convert from ms to seconds
+        }
+
+        /**
+         * Helper function to get Unix UTC timestamp
+         * @param {String} timestamp - UTC Unix timestamp
+         * @returns {int} - Text that contains date (in dd-mm-yyyy format)
+         */
+        function formatDateFromTimestamp(timestamp) {
+            const date = new Date(timestamp * 1000); // nhân 1000 để từ giây thành mili-giây
+            const day = String(date.getDate()).padStart(2, '0');
+            const month = String(date.getMonth() + 1).padStart(2, '0'); // tháng bắt đầu từ 0
+            const year = date.getFullYear();
+            return `${day}-${month}-${year}`;
+        }
+
         /**
          * Helper function to calculate new date with offset
          * @param {String} dateStr - Date in dd-mm-yyyy format
@@ -159,18 +199,6 @@
         }
 
         /**
-         * Helper function to format the current date as DD-MM-YYYY
-         * @returns {string} - Today's date in DD-MM-YYYY format
-         */
-        function getTodayDate() {
-            const today = new Date();
-            const day = String(today.getDate()).padStart(2, '0');
-            const month = String(today.getMonth() + 1).padStart(2, '0'); // Months are 0-based
-            const year = today.getFullYear();
-            return `${day}-${month}-${year}`;
-        }
-
-        /**
          * Helper function to extract text content using XPath
          * @param {string} xpath - XPath expression to evaluate
          * @param {Node} context - Context node for XPath evaluation
@@ -198,12 +226,12 @@
         async function executePreExtractionSnippet(date) {
             try {
                 if (typeof jQuery === 'undefined') {
-                    window.logToPopup('jQuery not available, skipping pre-extraction snippet');
+                    console.log('jQuery not available, skipping pre-extraction snippet');
                     return false;
                 }
 
                 if (!date || typeof date !== 'string' || !/^\d{2}-\d{2}-\d{4}$/.test(date)) {
-                    window.logToPopup('Invalid or missing date parameter, skipping pre-extraction snippet');
+                    console.log('Invalid or missing date parameter, skipping pre-extraction snippet');
                     return false;
                 }
 
@@ -212,19 +240,20 @@
 
                 // Update datepicker
                 if ($('#date').length) {
+                    if($('#date').val() == date) return success; //if the current selected date is the one to update then no need to do anything
                     $('#date').datepicker('update', date);
-                    window.logToPopup(`Datepicker updated to ${date}`);
+                    console.log(`Datepicker updated to ${date}`);
                 } else {
-                    window.logToPopup('Datepicker element (#date) not found');
+                    console.log('Datepicker element (#date) not found');
                     success = false;
                 }
 
                 // Set count value
                 if ($('#count').length) {
                     $('#count').val(365);
-                    window.logToPopup('Count input set to 365');
+                    console.log('Count input set to 365');
                 } else {
-                    window.logToPopup('Count input (#count) not found');
+                    console.log('Count input (#count) not found');
                     success = false;
                 }
 
@@ -232,9 +261,9 @@
                 const submitButton = document.querySelector('#so-ket-qua button[type="submit"]');
                 if (submitButton) {
                     submitButton.click();
-                    window.logToPopup('Submit button clicked');
+                    console.log('Submit button clicked');
                 } else {
-                    window.logToPopup('Submit button (#so-ket-qua button[type="submit"]) not found');
+                    console.log('Submit button (#so-ket-qua button[type="submit"]) not found');
                     success = false;
                 }
 
@@ -243,7 +272,7 @@
 
                 return success;
             } catch (error) {
-                window.logToPopup(`Error in pre-extraction snippet: ${error.message}`);
+                console.error('Error in pre-extraction snippet', error);
                 return false;
             }
         }
@@ -297,11 +326,13 @@
                     }
 
                     // Add to extracted data
-                    extractedData.push({
-                        id: currentId++,
-                        title: title || `Match ${currentId}`,
-                        content: content.length > 0 ? content : ['No odds available']
-                    });
+                    if(title){
+                        extractedData.push({
+                            id: currentId++,
+                            title: title || `Match ${currentId}`,
+                            content: content.length > 0 ? content : ['No odds available']
+                        });
+                    } 
                 }
 
                 return extractedData;
@@ -319,9 +350,9 @@
         function updateTableWithData(data, tbody) {
             try {
                 window.logToPopup('Data Collector: Updating table with data...');
+                console.log('data: ',data);
                 // Clear existing table body
                 tbody.innerHTML = '';
-                let values = [];
                 // Process each data set
                 data.forEach((dataSet) => {
                     const totalRows = 1 + dataSet.content.length; // 1 title + N content
@@ -347,7 +378,7 @@
                     // Title cell
                     const titleTd = document.createElement('td');
                     let title = convertDateFormat(extractDate(dataSet.title))
-                    values.push(title); //add info into values array for updating to Gooogle sheet later 
+                    values.push([getUnixUTCTimestamp(extractDate(dataSet.title)), title]); //add info into values array for updating to Gooogle sheet later 
                     titleTd.textContent = title;
                     titleTd.style.cssText = `
                         border: 1px solid #ccc;
@@ -367,7 +398,7 @@
                         const trContent = document.createElement('tr');
                         const contentTd = document.createElement('td');
                         contentTd.textContent = contentItem;
-                        values.push(contentItem); //add info into values array for updating to Gooogle sheet later 
+                        values.push([getUnixUTCTimestamp(extractDate(dataSet.title)), contentItem]); //add info into values array for updating to Gooogle sheet later 
                         contentTd.style.cssText = `
                             border: 1px solid #ccc;
                             padding: 4px;
@@ -412,7 +443,6 @@
                         window.logToPopup(`Popup width adjusted to ${newWidth}px`);
                     }
                 }
-                // updateSheet(values);
             } catch (error) {
                 window.logToPopup('Data Collector: Error in updateTableWithData:\n' + error);
             }
@@ -873,7 +903,7 @@
         }
 
         // Hàm cập nhật Google Sheet
-        async function updateSheet(values) {
+        async function updateSheetViaAPI(values) {
 
             const body = {
                 values: values,
@@ -892,20 +922,29 @@
             }
         }
 
+        async function updateSheet(values) {
+            console.log('values: ',values);
+            writeToSheet(values, "mb");
+        }
          /**
          * Ghi dữ liệu vào Google Sheet
          * @param {Object} valuesArray - Dữ liệu dạng object, ví dụ: { name: "Nguyễn", score: 95 }
          * @param {String} sheetName - Tên sheet được ghi
          */
         function writeToSheet(rows, sheetName = "Sheet1") {
+            console.log(`✅ Bắt đầu ghi vào sheet ${sheetName}`);
             if (!Array.isArray(rows) || !Array.isArray(rows[0])) {
               console.error("❌ Dữ liệu sai định dạng! Cần mảng 2 chiều.");
               return;
             }
+            let url = SHEET_API_BASE_URL;
+            const params = [`action=write`];
+            if (sheetName) params.push(`sheet=${encodeURIComponent(sheetName)}`);
+            url += `?${params.join("&")}`;
           
             GM_xmlhttpRequest({
               method: "POST",
-              url: `${SHEET_API_BASE_URL}?sheet=${encodeURIComponent(sheetName)}`,
+              url: url,
               headers: {
                 "Content-Type": "application/json"
               },
@@ -937,12 +976,12 @@
          * @returns {Promise<any>} Dữ liệu JSON từ Apps Script
          */
         function readFromSheet(sheetName = "", range = "") {
+            console.log(`✅ Bắt đầu đọc Dữ liệu từ Sheet: ${sheetName}!${range}`);
             // Tạo URL với tham số nếu có
             let url = SHEET_API_BASE_URL;
-            const params = [];
+            const params = [`action=read`, `sheet=${encodeURIComponent(sheetName)}`, `range=${encodeURIComponent(range)}`];
             if (sheetName) params.push(`sheet=${encodeURIComponent(sheetName)}`);
-            if (range) params.push(`range=${encodeURIComponent(range)}`);
-            if (params.length > 0) url += `?${params.join("&")}`;
+            url += `?${params.join("&")}`;
 
             return new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
@@ -966,6 +1005,41 @@
             });
         }  
 
+        function getExtremeValueFromSheet(sheetName = "", columnName = "A", type = "max") {
+            console.log(`📌 Bắt đầu lấy Giá trị ${type} từ cột ${columnName} của sheet ${sheetName}`);
+            // Tạo URL với tham số truy vấn
+            let url = SHEET_API_BASE_URL;
+            const params = [`action=extreme`, `column=${encodeURIComponent(columnName)}`, `type=${encodeURIComponent(type)}`];
+            if (sheetName) params.push(`sheet=${encodeURIComponent(sheetName)}`);
+            url += `?${params.join("&")}`;
+        
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: "GET",
+                    url: url,
+                    onload: function (response) {
+                        try {
+                            const result = JSON.parse(response.responseText);
+                            if (result.error) {
+                                console.error("❌ Lỗi từ server:", result.error);
+                                reject(new Error(result.error));
+                            } else {
+                                console.log(`📌 Giá trị ${type}:`, result.value);
+                                resolve(result.value);
+                            }
+                        } catch (err) {
+                            console.error("❌ Lỗi parse dữ liệu:", err);
+                            reject(err);
+                        }
+                    },
+                    onerror: function (err) {
+                        console.error("❌ Lỗi fetch extreme value:", err);
+                        reject(err);
+                    }
+                });
+            });
+        }        
+        
         // Initialize popup when page loads
         window.addEventListener('load', async () => {
             try {
@@ -987,38 +1061,57 @@
                 
                 // tokenClient.requestAccessToken({ prompt: 'consent' });
 
-                writeToSheet([
-                    ["Hà Nội", "2025-05-18", "Giải đặc biệt", "123456"],
-                    ["TP.HCM", "2025-05-18", "Giải nhất", "654321"]
-                  ], "chat");
-                  
+                getExtremeValueFromSheet("mb", "A", "min")
+                    .then(value => {
+                        console.log("📈 Giá trị nhỏ nhất cột:", value);
+                        minDateTimestamp = value;
+                        getExtremeValueFromSheet("mb", "A", "max")
+                            .then(value => {
+                                console.log("📈 Giá trị lớn nhất cột:", value);
+                                maxDateTimestamp = value;
+                                if ((minDateTimestamp == 'NaN' && maxDateTimestamp == 'NaN') || (getUnixUTCTimestamp(getTodayDate()) - maxDateTimestamp > 0)) {
+                                    executePreExtractionSnippet(getTodayDate());
+                                } else {
+                                    executePreExtractionSnippet(offsetDate(formatDateFromTimestamp(minDateTimestamp), -1));
+                                }
 
-                // Đọc từ sheet "chat" và vùng A2:D5
-                readFromSheet("chat", "A2:D")
-                    .then(data => console.log("📋 Dữ liệu:", data))
-                    .catch(err => console.error("❌ Lỗi:", err));
+                                //start scanning the page
+                                console.log('Data Collector: Page loaded, initializing...');
+                                const popup = createFloatingPopup();
+                                document.body.appendChild(popup);
+                                window.logToPopup('Data Collector initialized');
 
-                console.log('Data Collector: Page loaded, initializing...');
-                const popup = createFloatingPopup();
-                document.body.appendChild(popup);
-                window.logToPopup('Data Collector initialized');
+                                // Initial data extraction
+                                return refreshData();
 
-                // Execute pre-extraction snippet once with today's date
-                // const todayDate = getTodayDate();
-                // await executePreExtractionSnippet(todayDate);
+                                
+                            }).then(value => {
+                                // Start initial interval
+                                startRefreshInterval();
 
-                // Initial data extraction
-                await refreshData();
+                                // Clean up interval when popup is closed
+                                window.addEventListener('unload', () => {
+                                    if (refreshIntervalId) {
+                                        clearInterval(refreshIntervalId);
+                                    }
+                                });
 
-                // Start initial interval
-                startRefreshInterval();
+                                //update all found data to Google sheet
+                                 updateSheet(values);
+                            })   
+                            .catch(err => {
+                                console.error("❌ Lỗi khi lấy giá trị:", err);
+                            });
+                    })
+                    .catch(err => {
+                        console.error("❌ Lỗi khi lấy giá trị:", err);
+                    });
 
-                // Clean up interval when popup is closed
-                window.addEventListener('unload', () => {
-                    if (refreshIntervalId) {
-                        clearInterval(refreshIntervalId);
-                    }
-                });
+                // // Đọc từ sheet "chat" và vùng A2:D5
+                // readFromSheet("mb", "A2:D")
+                //     .then(data => console.log("📋 Dữ liệu:", data))
+                //     .catch(err => console.error("❌ Lỗi:", err));
+                
             } catch (error) {
                 console.error('Data Collector: Error in initialization:', error);
             }

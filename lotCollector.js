@@ -35,6 +35,7 @@
         window.dataCollectorInterval = 5;    // Default refresh interval
         let originalWidth = 300;             // Store original popup width
         let originalHeight = 0;              // Store original popup height
+        const STOP_EXECUTION = "STOP_EXECUTION_SIGNAL"; // Khai báo hằng số ở đây
 
         //Global variables for sheets
         const CLIENT_ID = 'YOUR_CLIENT_ID_HERE';
@@ -68,13 +69,23 @@
 
         /**
          * Helper function to format the current date as DD-MM-YYYY
+         * @returns {number} - current Uix timestamp
+         */
+        function getCurrentUnixTimestamp() {
+            // Date.now() trả về số mili giây kể từ Unix epoch.
+            // Chia cho 1000 để đổi sang giây và làm tròn xuống.
+            return Math.floor(Date.now() / 1000);
+        }
+
+        /**
+         * Helper function to format the current date as DD-MM-YYYY
          * @returns {string} - Today's date in DD-MM-YYYY format
          */
         function getTodayDate() {
             const today = new Date();
-            const day = String(today.getDate()).padStart(2, '0');
-            const month = String(today.getMonth() + 1).padStart(2, '0'); // Months are 0-based
-            const year = today.getFullYear();
+            const day = String(today.getUTCDate()).padStart(2, '0');
+            const month = String(today.getUTCMonth() + 1).padStart(2, '0'); // Months are 0-based
+            const year = today.getUTCFullYear();
             return `${day}-${month}-${year}`;
         }
 
@@ -106,9 +117,9 @@
          */
         function formatDateFromTimestamp(timestamp) {
             const date = new Date(timestamp * 1000); // nhân 1000 để từ giây thành mili-giây
-            const day = String(date.getDate()).padStart(2, '0');
-            const month = String(date.getMonth() + 1).padStart(2, '0'); // tháng bắt đầu từ 0
-            const year = date.getFullYear();
+            const day = String(date.getUTCDate()).padStart(2, '0');
+            const month = String(date.getUTCMonth() + 1).padStart(2, '0'); // tháng bắt đầu từ 0
+            const year = date.getUTCFullYear();
             return `${day}-${month}-${year}`;
         }
 
@@ -199,6 +210,35 @@
         }
 
         /**
+         * Helper function to convert date format
+         * @param {String} dateStr - Date in either dd-mm-yyyy or d-m-yyyy format
+         * @returns {String} - New date format is always dd-mm-yyyy format
+         */
+        function normalizeDateString(dateStr) {
+            // Tách chuỗi thành các phần ngày, tháng, năm dựa trên dấu '-'
+            const parts = dateStr.split('-');
+        
+            if (parts.length === 3) {
+                let day = parts[0];
+                let month = parts[1];
+                const year = parts[2];
+        
+                // Thêm '0' vào trước nếu ngày chỉ có 1 chữ số
+                if (day.length === 1) {
+                    day = '0' + day;
+                }
+                // Thêm '0' vào trước nếu tháng chỉ có 1 chữ số
+                if (month.length === 1) {
+                    month = '0' + month;
+                }
+                return `${day}-${month}-${year}`;
+            }
+            // Trả về chuỗi gốc nếu định dạng không như mong đợi để tránh lỗi
+            console.warn("Unexpected date format for normalization:", dateStr);
+            return dateStr;
+        }
+
+        /**
          * Helper function to extract text content using XPath
          * @param {string} xpath - XPath expression to evaluate
          * @param {Node} context - Context node for XPath evaluation
@@ -238,38 +278,42 @@
                 const $ = jQuery;
                 let success = true;
 
+                console.log(`Expected date is ${date}\nPicker date is ${$('#date').val()}`);
                 // Update datepicker
-                if ($('#date').length) {
-                    if($('#date').val() == date) return success; //if the current selected date is the one to update then no need to do anything
-                    $('#date').datepicker('update', date);
-                    console.log(`Datepicker updated to ${date}`);
+                if(normalizeDateString($('#date').val()) == date){
+                    console.log(`Datepicker already updated to ${date}. No need to make change.`);
+                    return false; //if the current selected date is the one to update then no need to do anything
                 } else {
-                    console.log('Datepicker element (#date) not found');
-                    success = false;
-                }
-
-                // Set count value
-                if ($('#count').length) {
-                    $('#count').val(365);
-                    console.log('Count input set to 365');
-                } else {
-                    console.log('Count input (#count) not found');
-                    success = false;
-                }
-
-                // Click submit button
-                const submitButton = document.querySelector('#so-ket-qua button[type="submit"]');
-                if (submitButton) {
-                    submitButton.click();
-                    console.log('Submit button clicked');
-                } else {
-                    console.log('Submit button (#so-ket-qua button[type="submit"]) not found');
-                    success = false;
+                    if ($('#date').length) {
+                        $('#date').datepicker('update', date);
+                        console.log(`Datepicker updated to ${date}`);
+                    } else {
+                        console.log('Datepicker element (#date) not found');
+                        success = false;
+                    }
+    
+                    // Set count value
+                    if ($('#count').length) {
+                        $('#count').val(3);
+                        console.log('Count input set to 3');
+                    } else {
+                        console.log('Count input (#count) not found');
+                        success = false;
+                    }
+                    // Click submit button
+                    const submitButton = document.querySelector('#so-ket-qua button[type="submit"]');
+                    if (submitButton) {
+                        submitButton.click();
+                        console.log('Submit button clicked');
+                    } else {
+                        console.log('Submit button (#so-ket-qua button[type="submit"]) not found');
+                        success = false;
+                    }
                 }
 
                 // Wait for page to update (adjustable delay)
-                await delay(2000); // 2-second delay to allow page update
-
+                // await delay(3000); // 3-second delay to allow page update
+                console.log('Returning success: ',success);
                 return success;
             } catch (error) {
                 console.error('Error in pre-extraction snippet', error);
@@ -1039,6 +1083,36 @@
                 });
             });
         }        
+
+        async function triggerDataScanning(){
+
+            const currentTimestamp = getCurrentUnixTimestamp();
+
+             //start scanning the page
+             console.log('Data Collector: Page loaded, initializing...');
+             console.log('Data Collector: Scanning the page at: ', currentTimestamp);
+             const popup = createFloatingPopup();
+             document.body.appendChild(popup);
+             window.logToPopup('Data Collector initialized');
+
+             // Initial data extraction
+             return refreshData();
+        }
+
+        function triggerUpdateSequence(){
+            // Start initial interval
+            startRefreshInterval();
+
+            // Clean up interval when popup is closed
+            window.addEventListener('unload', () => {
+                if (refreshIntervalId) {
+                    clearInterval(refreshIntervalId);
+                }
+            });
+
+            //update all found data to Google sheet
+             updateSheet(values);
+        }
         
         // Initialize popup when page loads
         window.addEventListener('load', async () => {
@@ -1064,43 +1138,54 @@
                 getExtremeValueFromSheet("mb", "A", "min")
                     .then(value => {
                         console.log("📈 Giá trị nhỏ nhất cột:", value);
+                        console.log("📈 Ngày nhỏ nhất cột:", formatDateFromTimestamp(value));
                         minDateTimestamp = value;
+
                         getExtremeValueFromSheet("mb", "A", "max")
                             .then(value => {
                                 console.log("📈 Giá trị lớn nhất cột:", value);
+                                console.log("📈 Ngày lớn nhất cột:", formatDateFromTimestamp(value));
                                 maxDateTimestamp = value;
                                 if ((minDateTimestamp == 'NaN' && maxDateTimestamp == 'NaN') || (getUnixUTCTimestamp(getTodayDate()) - maxDateTimestamp > 0)) {
-                                    executePreExtractionSnippet(getTodayDate());
-                                } else {
-                                    executePreExtractionSnippet(offsetDate(formatDateFromTimestamp(minDateTimestamp), -1));
-                                }
-
-                                //start scanning the page
-                                console.log('Data Collector: Page loaded, initializing...');
-                                const popup = createFloatingPopup();
-                                document.body.appendChild(popup);
-                                window.logToPopup('Data Collector initialized');
-
-                                // Initial data extraction
-                                return refreshData();
-
-                                
-                            }).then(value => {
-                                // Start initial interval
-                                startRefreshInterval();
-
-                                // Clean up interval when popup is closed
-                                window.addEventListener('unload', () => {
-                                    if (refreshIntervalId) {
-                                        clearInterval(refreshIntervalId);
+                                    if(maxDateTimestamp == 'NaN'){
+                                        console.log("📈 Ngày lớn nhất đang bỏ trống");
+                                    } else {
+                                        console.log("📈 Ngày lớn nhất chưa phải là ngày hiện tại", formatDateFromTimestamp(maxDateTimestamp));
                                     }
-                                });
-
-                                //update all found data to Google sheet
-                                 updateSheet(values);
+                                    
+                                    executePreExtractionSnippet(getTodayDate()).then(result =>{
+                                        if(result){
+                                            throw STOP_EXECUTION;
+                                        } else {
+                                            triggerDataScanning().then(value => {
+                                                triggerUpdateSequence();
+                                            });
+                                        }
+                                    }).catch(error => {
+                                        // Xử lý lỗi nếu Promise bị từ chối (rejected)
+                                        console.error("Đã có lỗi xảy ra:", error);
+                                    });
+                                } else {
+                                    executePreExtractionSnippet(offsetDate(formatDateFromTimestamp(minDateTimestamp), -1)).then(result =>{
+                                        if(result){
+                                            throw STOP_EXECUTION;
+                                        } else {
+                                            triggerDataScanning().then(value => {
+                                                triggerUpdateSequence();
+                                            });
+                                        }
+                                    }).catch(error => {
+                                        // Xử lý lỗi nếu Promise bị từ chối (rejected)
+                                        console.error("Đã có lỗi xảy ra:", error);
+                                    });
+                                }
                             })   
                             .catch(err => {
-                                console.error("❌ Lỗi khi lấy giá trị:", err);
+                                if (err === STOP_EXECUTION) {
+                                    console.log(`Thread was terminated gracefully!`);
+                                } else {
+                                    console.error("❌ Lỗi khi lấy giá trị:", err);
+                                }
                             });
                     })
                     .catch(err => {

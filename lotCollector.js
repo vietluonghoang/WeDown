@@ -35,6 +35,7 @@
         window.dataCollectorInterval = 5;    // Default refresh interval
         let originalWidth = 300;             // Store original popup width
         let originalHeight = 0;              // Store original popup height
+        const dateCount = 300;               // Date count (range) for result page
         const STOP_EXECUTION = "STOP_EXECUTION_SIGNAL"; // Khai báo hằng số ở đây
 
         //Global variables for sheets
@@ -159,8 +160,8 @@
 
         /**
          * Helper function to convert date format
-         * @param {String} dateStr - Date in either dd-mm-yyyy or Ddd/Mmm/yyyy format
-         * @returns {String} - New date format (either dd-mm-yyyy or Ddd/Mmm/yyyy format)
+         * @param {String} dateStr - Date in either dd-mm-yyyy or dd/mm/yyyy format
+         * @returns {String} - New date format (either dd-mm-yyyy or dd/mm/yyyy format)
          */
         function convertDateFormat(dateStr) {
             // Check if input is dd-mm-yyyy format
@@ -177,17 +178,15 @@
                 }
         
                 // Convert to Ddd/Mmm/yyyy (e.g., D15/M06/2025)
-                const formattedDay = `D${String(day).padStart(2, '0')}`;
-                const formattedMonth = `M${String(month).padStart(2, '0')}`;
+                const formattedDay = `${String(day).padStart(2, '0')}`;
+                const formattedMonth = `${String(month).padStart(2, '0')}`;
         
                 return `${formattedDay}/${formattedMonth}/${year}`;
             }
             // Check if input is Ddd/Mmm/yyyy format (e.g., D15/M06/2025)
-            else if (/^D\d{2}\/M\d{2}\/\d{4}$/.test(dateStr)) {
+            else if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) {
                 // Parse input date
                 const [dayPart, monthPart, year] = dateStr.split('/');
-                const day = parseInt(dayPart.slice(1)); // Remove 'D' prefix
-                const month = parseInt(monthPart.slice(1)); // Remove 'M' prefix
         
                 // Create Date object
                 const date = new Date(year, month - 1, day);
@@ -205,7 +204,7 @@
             }
             // Invalid format
             else {
-                return "Invalid date format. Use dd-mm-yyyy or Ddd/Mmm/yyyy (e.g., 15-06-2025 or D15/M06/2025)";
+                return "Invalid date format. Use dd-mm-yyyy or dd/mm/yyyy (e.g., 15-06-2025 or 15/06/2025)";
             }
         }
 
@@ -294,8 +293,8 @@
     
                     // Set count value
                     if ($('#count').length) {
-                        $('#count').val(3);
-                        console.log('Count input set to 3');
+                        $('#count').val(dateCount);
+                        console.log(`Count input set to ${dateCount}`);
                     } else {
                         console.log('Count input (#count) not found');
                         success = false;
@@ -399,6 +398,7 @@
                 tbody.innerHTML = '';
                 // Process each data set
                 data.forEach((dataSet) => {
+                    let valueSet = [];
                     const totalRows = 1 + dataSet.content.length; // 1 title + N content
 
                     // Row 1: ID (rowspan), and Title
@@ -422,7 +422,8 @@
                     // Title cell
                     const titleTd = document.createElement('td');
                     let title = convertDateFormat(extractDate(dataSet.title))
-                    values.push([getUnixUTCTimestamp(extractDate(dataSet.title)), title]); //add info into values array for updating to Gooogle sheet later 
+                    valueSet.push(getUnixUTCTimestamp(extractDate(dataSet.title))); //add info into valueSet array for updating to Gooogle sheet later 
+                    valueSet.push(title); //add info into valueSet array for updating to Gooogle sheet later 
                     titleTd.textContent = title;
                     titleTd.style.cssText = `
                         border: 1px solid #ccc;
@@ -437,12 +438,13 @@
 
                     tbody.appendChild(trTitle);
 
+                    let contents =[]
                     // Add content rows (each one is its own row under the title)
                     dataSet.content.forEach((contentItem) => {
                         const trContent = document.createElement('tr');
                         const contentTd = document.createElement('td');
                         contentTd.textContent = contentItem;
-                        values.push([getUnixUTCTimestamp(extractDate(dataSet.title)), contentItem]); //add info into values array for updating to Gooogle sheet later 
+                        contents.push(contentItem); //add info into values array for updating to Gooogle sheet later 
                         contentTd.style.cssText = `
                             border: 1px solid #ccc;
                             padding: 4px;
@@ -454,6 +456,8 @@
                         trContent.appendChild(contentTd);
                         tbody.appendChild(trContent);
                     });
+                    valueSet.push(contents.join(' ')); //convert all results to 1 single string
+                    values.push(valueSet);
                 });
 
                 // Adjust popup width based on table content
@@ -1163,7 +1167,11 @@
                                         }
                                     }).catch(error => {
                                         // Xử lý lỗi nếu Promise bị từ chối (rejected)
-                                        console.error("Đã có lỗi xảy ra:", error);
+                                        if (error === STOP_EXECUTION) {
+                                            console.log(`Thread was terminated gracefully!`);
+                                        } else {
+                                            console.error("Đã có lỗi xảy ra:", error);
+                                        }
                                     });
                                 } else {
                                     executePreExtractionSnippet(offsetDate(formatDateFromTimestamp(minDateTimestamp), -1)).then(result =>{
@@ -1176,7 +1184,11 @@
                                         }
                                     }).catch(error => {
                                         // Xử lý lỗi nếu Promise bị từ chối (rejected)
-                                        console.error("Đã có lỗi xảy ra:", error);
+                                        if (error === STOP_EXECUTION) {
+                                            console.log(`Thread was terminated gracefully!`);
+                                        } else {
+                                            console.error("Đã có lỗi xảy ra:", error);
+                                        }
                                     });
                                 }
                             })   

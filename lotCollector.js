@@ -54,6 +54,8 @@
         let gisInited = false;
 
         const SHEET_API_BASE_URL = "https://script.google.com/macros/s/AKfycbxuDJA_Y4Ht_JBQF_wL0vrz6FP-2r3Izf7lIVXyvE1hTmqDHQRcRLnGbY_dfwut8gec/exec";
+        const SHEET_API_BASE_SHEETNAME = "mb";
+        const SHEET_API_BASE_COLUMNNAME = "A";
 
         let minDateTimestamp = 0; //store the earliest date in the data
         let maxDateTimestamp = 0; //store the latest date in the data
@@ -972,7 +974,7 @@
 
         async function updateSheet(values) {
             console.log('values: ',values);
-            writeToSheet(values, "mb");
+            writeToSheet(values, SHEET_API_BASE_SHEETNAME);
         }
          /**
          * Ghi dữ liệu vào Google Sheet
@@ -1139,13 +1141,13 @@
                 
                 // tokenClient.requestAccessToken({ prompt: 'consent' });
 
-                getExtremeValueFromSheet("mb", "A", "min")
+                getExtremeValueFromSheet(SHEET_API_BASE_SHEETNAME, SHEET_API_BASE_COLUMNNAME, "min")
                     .then(value => {
                         console.log("📈 Giá trị nhỏ nhất cột:", value);
                         console.log("📈 Ngày nhỏ nhất cột:", formatDateFromTimestamp(value));
                         minDateTimestamp = value;
 
-                        getExtremeValueFromSheet("mb", "A", "max")
+                        getExtremeValueFromSheet(SHEET_API_BASE_SHEETNAME, SHEET_API_BASE_COLUMNNAME, "max")
                             .then(value => {
                                 console.log("📈 Giá trị lớn nhất cột:", value);
                                 console.log("📈 Ngày lớn nhất cột:", formatDateFromTimestamp(value));

@@ -53,8 +53,8 @@
         let gapiInited = false;
         let gisInited = false;
 
-        const SHEET_API_BASE_URL = "https://script.google.com/macros/s/AKfycbxuDJA_Y4Ht_JBQF_wL0vrz6FP-2r3Izf7lIVXyvE1hTmqDHQRcRLnGbY_dfwut8gec/exec";
-        const SHEET_API_BASE_SHEETNAME = "mb";
+        const SHEET_API_BASE_URL = "https://script.google.com/macros/s/AKfycbwQz9WHb0WpHYTyUeuRmPhhoyU2Y8ILGWHi33Wf7WgSGprSZvbxvNVWJayERJ2Yb87G/exec";
+        let SHEET_API_BASE_SHEETNAME = "ag";
         const SHEET_API_BASE_COLUMNNAME = "A";
 
         let minDateTimestamp = 0; //store the earliest date in the data
@@ -260,6 +260,16 @@
         }
 
         /**
+         * Helper function to update sheetname based on the code selection 
+         */
+         
+        function updateSheetname(){
+            let sheetname = $('#code').val();
+            console.log(`Current sheetname is: ${sheetname}`);
+            SHEET_API_BASE_SHEETNAME = sheetname;
+        }
+
+        /**
          * Executes the pre-extraction form submission
          * @param {string} date - Date to set in the datepicker (format: DD-MM-YYYY)
          * @returns {Promise<boolean>} - Resolves to true if successful, false otherwise
@@ -335,8 +345,8 @@
                 
                 // XPath expressions for data
                 const xpathExpressions = {
-                    title: "./div[@id = 'outer_result_mb']/div[@id = 'result_mb']/div[contains(@class, 'row')]/div[contains(@class, 'col-sm-6')]/div/table/thead//text()",
-                    content: "./div[@id = 'outer_result_mb']/div[@id = 'result_mb']/div[contains(@class, 'row')]/div[2]/table/tbody/tr/td[2]"
+                    title: "./div[contains(@id, 'outer_result')]/div[contains(@id, 'result_')]/div[contains(@class, 'row')]/div[contains(@class, 'col-sm-6')]//table/thead/tr[contains(@class, 'title')]//span",
+                    content: "./div[contains(@id, 'outer_result')]/div[contains(@id, 'result_')]/div[contains(@class, 'row')]/div[2]/table/tbody/tr/td[2]"
                 };
 
                 // Get all match components
@@ -362,8 +372,9 @@
                         const highlightedContent = document.evaluate("./span[contains(@class, 'maudo')]", contentNodes.snapshotItem(j), null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
                         if (highlightedContent.snapshotLength > 0) {
                             for (let k = 0; k < highlightedContent.snapshotLength; k++) {
-                                const pattern = new RegExp(`\\b(${highlightedContent.snapshotItem(k).textContent.trim()})\\b`, 'gi');
-                                value = value.replace(pattern, "(" + highlightedContent.snapshotItem(k).textContent.trim() + ")");
+                                // const pattern = new RegExp(`\\b(${highlightedContent.snapshotItem(k).textContent.trim()})\\b`, 'gi');
+                                // value = value.replace(pattern, "(" + highlightedContent.snapshotItem(k).textContent.trim() + ")");
+                                value = value.replace(highlightedContent.snapshotItem(k).textContent.trim(), "(" + highlightedContent.snapshotItem(k).textContent.trim() + ")");
                             }
                         }
 
@@ -1140,6 +1151,8 @@
                 //   };
                 
                 // tokenClient.requestAccessToken({ prompt: 'consent' });
+                updateSheetname();
+                console.log(`======== Thao tác dữ liệu trên bảng: ${SHEET_API_BASE_SHEETNAME} =========`);
 
                 getExtremeValueFromSheet(SHEET_API_BASE_SHEETNAME, SHEET_API_BASE_COLUMNNAME, "min")
                     .then(value => {
@@ -1152,13 +1165,9 @@
                                 console.log("📈 Giá trị lớn nhất cột:", value);
                                 console.log("📈 Ngày lớn nhất cột:", formatDateFromTimestamp(value));
                                 maxDateTimestamp = value;
-                                if ((minDateTimestamp == 'NaN' && maxDateTimestamp == 'NaN') || (getUnixUTCTimestamp(getTodayDate()) - maxDateTimestamp > 0)) {
-                                    if(maxDateTimestamp == 'NaN'){
-                                        console.log("📈 Ngày lớn nhất đang bỏ trống");
-                                    } else {
-                                        console.log("📈 Ngày lớn nhất chưa phải là ngày hiện tại", formatDateFromTimestamp(maxDateTimestamp));
-                                    }
-                                    
+                                if (minDateTimestamp == 'NaN' && maxDateTimestamp == 'NaN') {
+                                    console.log("📈 Dữ liệu đang bỏ trống");
+                                                                        
                                     executePreExtractionSnippet(getTodayDate()).then(result =>{
                                         if(result){
                                             throw STOP_EXECUTION;
@@ -1175,7 +1184,31 @@
                                             console.error("Đã có lỗi xảy ra:", error);
                                         }
                                     });
-                                } else {
+                                } 
+                                // This section doesnt work well if the most up-to-date result doesn't have the result for the latest date
+                                
+                                // else if (getUnixUTCTimestamp(getTodayDate()) - maxDateTimestamp > 0 && normalizeDateString($('#date').val()) !== normalizeDateString(getTodayDate())) {
+                                //     console.log("📈 Ngày lớn nhất chưa phải là ngày hiện tại:", formatDateFromTimestamp(maxDateTimestamp));
+                                                                        
+                                //     executePreExtractionSnippet(getTodayDate()).then(result =>{
+                                //         if(result){
+                                //             throw STOP_EXECUTION;
+                                //         } else {
+                                //             triggerDataScanning().then(value => {
+                                //                 triggerUpdateSequence();
+                                //             });
+                                //         }
+                                //     }).catch(error => {
+                                //         // Xử lý lỗi nếu Promise bị từ chối (rejected)
+                                //         if (error === STOP_EXECUTION) {
+                                //             console.log(`Thread was terminated gracefully!`);
+                                //         } else {
+                                //             console.error("Đã có lỗi xảy ra:", error);
+                                //         }
+                                //     });
+                                // } 
+                                else {
+                                    console.log("📈 Cập nhật datepicker về ngày nhỏ nhất:", formatDateFromTimestamp(minDateTimestamp));
                                     executePreExtractionSnippet(offsetDate(formatDateFromTimestamp(minDateTimestamp), -1)).then(result =>{
                                         if(result){
                                             throw STOP_EXECUTION;

@@ -1,4 +1,4 @@
-// This is Google AppScript
+// This is Google AppScript, which is used for updating Google Spread Sheet
 
 function doGet(e) {
     const action = e.parameter.action;

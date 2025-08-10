@@ -112,7 +112,9 @@
             isRefreshing: false,
             lastChildData: { timestamp: 0, data: [] },
             lastRenderSignature: '',
-            lastMatchCount: 0
+            lastMatchCount: 0,
+            isUserScrolling: false,
+            scrollIdleTimer: null
         };
 
         // ==================== XPath CONFIGURATION ====================
@@ -121,26 +123,26 @@
             oddsGroup: "./div[contains(@class, 'odds')]",
             expressions: {
                 matchInfo: {
-                    teamA: "./div[contains(@class, 'odds')][1]/div[contains(@class, 'event')]/div[contains(@class, 'team')][1]//text()",
-                    teamB: "./div[contains(@class, 'odds')][1]/div[contains(@class, 'event')]/div[contains(@class, 'team')][2]//text()",
-                    time: "parent::div/preceding-sibling::div[contains(@class, 'mathch-header')]/div[contains(@class, 'row-title')]/div[contains(@class, 'info')]//text()"
+                    teamA: "./div[contains(@class, 'odds')][1]/div[contains(@class, 'event')]/div[contains(@class, 'team')][1]/div[contains(@class, 'team')]/div[contains(@class, 'info')]/span/text()[1]",
+                    teamB: "./div[contains(@class, 'odds')][1]/div[contains(@class, 'event')]/div[contains(@class, 'team')][2]/div[contains(@class, 'team')]/div[contains(@class, 'info')]/span/text()[1]",
+                    time: "parent::div/preceding-sibling::div[contains(@class, 'mathch-header')]/div[contains(@class, 'row-title')]/div[contains(@class, 'info')]/span/text()"
                 },
                 matchOdd: {
-                    handicapA: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'text-goal')]//text()",
-                    teamAodd: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'odds')]//text()",
-                    handicapB: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'text-goal')]//text()",
-                    teamBodd: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'odds')]//text()"
+                    handicapA: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'text-goal')]//text()[1]",
+                    teamAodd: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'odds')]/text()[1]",
+                    handicapB: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'text-goal')]//text()[1]",
+                    teamBodd: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'odds')]/text()[1]"
                 },
                 odds1X2: {
-                    teamAodd: "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'odds')]//text()",
-                    teamBodd: "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'odds')]//text()",
-                    draw: "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][3]/span[contains(@class, 'odds')]//text()"
+                    teamAodd: "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'odds')]/text()[1]",
+                    teamBodd: "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'odds')]/text()[1]",
+                    draw: "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][3]/span[contains(@class, 'odds')]/text()[1]"
                 },
                 overUnder: {
-                    handicapA: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'text-goal')]//text()",
-                    teamAodd: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'odds')]//text()",
-                    handicapB: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'text-goal')]//text()",
-                    teamBodd: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'odds')]//text()"
+                    handicapA: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'text-goal')]/text()[1]",
+                    teamAodd: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'odds')]/text()[1]",
+                    handicapB: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'text-goal')]/text()[1]",
+                    teamBodd: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'odds')]/text()[1]"
                 }
             }
         };
@@ -1217,6 +1219,11 @@
                 }
                 state.lastRenderSignature = signature;
                 
+                // Preserve scroll position
+                const scrollContainer = window.oddsCollectorMainContent;
+                const prevScrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
+                const prevScrollLeft = scrollContainer ? scrollContainer.scrollLeft : 0;
+                
                 tbody.innerHTML = '';
                 const fragment = document.createDocumentFragment();
                 
@@ -1255,8 +1262,23 @@
 
                 tbody.appendChild(fragment);
                 
-                // Adjust width on next frame to avoid sync layout thrash
-                requestAnimationFrame(() => adjustPopupWidth());
+                // Adjust width and restore scroll on next frame to avoid layout thrash
+                requestAnimationFrame(() => {
+                    if (scrollContainer) {
+                        const maxTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+                        scrollContainer.scrollTop = Math.min(prevScrollTop, maxTop);
+                        scrollContainer.scrollLeft = prevScrollLeft;
+                    }
+                    if (!state.isUserScrolling) {
+                        adjustPopupWidth();
+                    }
+                    // Trigger header flash
+                    const header = window.oddsCollectorHeader;
+                    if (header) {
+                        header.classList.add('header-updated');
+                        setTimeout(() => header.classList.remove('header-updated'), 800);
+                    }
+                });
             } catch (error) {
                 console.error('Odds Collector: Error in updateTableWithData:', error);
             }
@@ -1269,10 +1291,6 @@
             const table = document.querySelector('#odds-collector-popup table');
             if (!table) return;
 
-            table.style.display = 'none';
-            table.offsetHeight; // Force reflow
-            table.style.display = '';
-
             // Use scrollWidth to estimate required width of table content
             const requiredWidth = table.scrollWidth;
 
@@ -1283,7 +1301,6 @@
                     window.innerWidth - CONSTANTS.POPUP.MARGIN_FROM_EDGE
                 );
                 
-                popup.offsetHeight; // Force reflow
                 popup.style.width = `${newWidth}px`;
                 
                 state.originalWidth = newWidth;
@@ -1997,6 +2014,15 @@
                 box-sizing: border-box;
             `;
 
+            // Track user scroll to avoid disruptive layout adjustments
+            mainContent.addEventListener('scroll', () => {
+                state.isUserScrolling = true;
+                if (state.scrollIdleTimer) clearTimeout(state.scrollIdleTimer);
+                state.scrollIdleTimer = setTimeout(() => {
+                    state.isUserScrolling = false;
+                }, 300);
+            });
+
             const table = createTable();
             mainContent.appendChild(table);
 
@@ -2151,6 +2177,7 @@
                 window.oddsCollectorRefreshIndicator = refreshIndicator;
                 window.oddsCollectorRefreshButton = refreshButton;
                 window.oddsCollectorHeader = header;
+                window.oddsCollectorMainContent = mainContent;
 
                 // Initialize refresh button visibility
                 refreshButton.style.display = 'flex';
@@ -2330,6 +2357,13 @@
 @keyframes oc-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 #odds-collector-popup .flashing { animation: oc-flash 1s infinite alternate; }
 @keyframes oc-flash { from { filter: brightness(1); } to { filter: brightness(1.4); } }
+/* Header update flash */
+#odds-collector-popup .header-updated { 
+  background: linear-gradient(90deg, #00c853, #b9f6ca, #00c853) !important; 
+  background-size: 200% 100% !important;
+  animation: oc-header-sheen 0.8s linear;
+}
+@keyframes oc-header-sheen { from { background-position: 100% 0; } to { background-position: 0 0; } }
                 `;
                 document.head.appendChild(style);
             } catch (e) {

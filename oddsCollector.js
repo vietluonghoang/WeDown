@@ -25,14 +25,86 @@
     try {
         console.log('Odds Collector: Script starting...');
 
-        // Global variables for refresh functionality
-        let timeLeft = 5;                    // Countdown timer
-        let refreshIntervalId = null;        // Stores interval ID for cleanup
-        let isPaused = false;                // Tracks pause state
-        window.oddsCollectorInterval = 5;    // Default refresh interval
-        let originalWidth = 300;             // Store original popup width
-        let originalHeight = 0;              // Store original popup height
+        // ==================== CONSTANTS ====================
+        const CONSTANTS = {
+            REFRESH: {
+                DEFAULT_INTERVAL: 5,
+                NO_MATCHES_INTERVAL: 2,
+                MATCHES_FOUND_INTERVAL: 30
+            },
+            POPUP: {
+                DEFAULT_WIDTH: 300,
+                MIN_WIDTH: 200,
+                MIN_HEIGHT: 150,
+                HEADER_HEIGHT: 40,
+                PADDING: 20,
+                BORDER_WIDTH: 2,
+                MARGIN_FROM_EDGE: 40
+            },
+            COLORS: {
+                HEADER_GRADIENT_START: '#8B0000',
+                HEADER_GRADIENT_END: '#FF6B6B',
+                BACKGROUND: '#f0f8ff',
+                BORDER: '#ccc',
+                HIGHLIGHT: '#ffffe0',
+                HEADER_BACKGROUND: '#f8f9fa'
+            },
+            ANIMATIONS: {
+                FLASH_DURATION: 1000,
+                SPIN_DURATION: 1000
+            }
+        };
 
+        // ==================== STATE MANAGEMENT ====================
+        const state = {
+            timeLeft: CONSTANTS.REFRESH.DEFAULT_INTERVAL,
+            refreshIntervalId: null,
+            isPaused: false,
+            currentInterval: CONSTANTS.REFRESH.DEFAULT_INTERVAL,
+            originalWidth: CONSTANTS.POPUP.DEFAULT_WIDTH,
+            originalHeight: 0,
+            isDragging: false,
+            isResizing: false,
+            isCollapsed: false,
+            startX: 0,
+            startY: 0,
+            startLeft: 0,
+            startTop: 0,
+            startWidth: 0,
+            startHeight: 0
+        };
+
+        // ==================== XPath CONFIGURATION ====================
+        const XPATH_CONFIG = {
+            main: "//div[@id='mainArea']/div[contains(@class, 'odds')]/div[contains(@class, 'c-odds-table')]/div[contains(@class, 'c-league')]/div[contains(@class, 'c-match-group')]/div[contains(@class, 'c-match')]/div[contains(@class, 'bets')]/div[contains(@class, 'odds-group')]",
+            oddsGroup: "./div[contains(@class, 'odds')]",
+            expressions: {
+                matchInfo: {
+                    teamA: "./div[contains(@class, 'odds')][1]/div[contains(@class, 'event')]/div[contains(@class, 'team')][1]//text()",
+                    teamB: "./div[contains(@class, 'odds')][1]/div[contains(@class, 'event')]/div[contains(@class, 'team')][2]//text()",
+                    time: "parent::div/preceding-sibling::div[contains(@class, 'mathch-header')]/div[contains(@class, 'row-title')]/div[contains(@class, 'info')]//text()"
+                },
+                matchOdd: {
+                    handicapA: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'text-goal')]//text()",
+                    teamAodd: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'odds')]//text()",
+                    handicapB: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'text-goal')]//text()",
+                    teamBodd: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'odds')]//text()"
+                },
+                odds1X2: {
+                    teamAodd: "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'odds')]//text()",
+                    teamBodd: "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'odds')]//text()",
+                    draw: "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][3]/span[contains(@class, 'odds')]//text()"
+                },
+                overUnder: {
+                    handicapA: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'text-goal')]//text()",
+                    teamAodd: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'odds')]//text()",
+                    handicapB: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'text-goal')]//text()",
+                    teamBodd: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'odds')]//text()"
+                }
+            }
+        };
+
+        // ==================== UTILITY FUNCTIONS ====================
         /**
          * Helper function to extract text content using XPath
          * @param {string} xpath - XPath expression to evaluate
@@ -54,113 +126,72 @@
         }
 
         /**
+         * Creates a table cell with consistent styling
+         * @param {string} content - Cell content
+         * @param {Object} options - Styling options
+         * @returns {HTMLElement} - Styled table cell
+         */
+        function createTableCell(content, options = {}) {
+            const td = document.createElement('td');
+            td.textContent = content;
+            
+            const defaultStyle = `
+                border: 1px solid ${CONSTANTS.COLORS.BORDER};
+                padding: 4px;
+                text-align: center;
+                word-wrap: break-word;
+                word-break: break-word;
+                min-width: 60px;
+            `;
+            
+            const customStyle = options.style || '';
+            td.style.cssText = defaultStyle + customStyle;
+            
+            if (options.rowSpan) td.rowSpan = options.rowSpan;
+            if (options.colSpan) td.colSpan = options.colSpan;
+            if (options.backgroundColor) td.style.backgroundColor = options.backgroundColor;
+            
+            return td;
+        }
+
+        /**
+         * Creates a block data structure for odds
+         * @param {string} name - Block name
+         * @param {Array} detailNames - Array of detail column names
+         * @returns {Object} - Block structure
+         */
+        function createOddsBlock(name, detailNames) {
+            return {
+                name: name,
+                detailNames: detailNames,
+                details: []
+            };
+        }
+
+        // ==================== DATA EXTRACTION ====================
+        /**
          * Extracts betting odds data from the page using XPath
          * @returns {Array} - Array of match data with odds
          */
         function extractDataFromPage() {
             try {
                 console.log('Odds Collector: Starting data extraction...');
-                // Main XPath for finding match components
-                const mainXPath = "//div[@id='mainArea']/div[contains(@class, 'odds')]/div[contains(@class, 'c-odds-table')]/div[contains(@class, 'c-league')]/div[contains(@class, 'c-match-group')]/div[contains(@class, 'c-match')]/div[contains(@class, 'bets')]/div[contains(@class, 'odds-group')]";
                 
-                // XPath for finding odds groups within a match
-                const oddsGroupXPath = "./div[contains(@class, 'odds')]";
-                
-                // XPath expressions for different data types
-                const xpathExpressions = {
-                    matchInfo: {
-                        teamA: "./div[contains(@class, 'odds')][1]/div[contains(@class, 'event')]/div[contains(@class, 'team')][1]//text()",
-                        teamB: "./div[contains(@class, 'odds')][1]/div[contains(@class, 'event')]/div[contains(@class, 'team')][2]//text()",
-                        time: "parent::div/preceding-sibling::div[contains(@class, 'mathch-header')]/div[contains(@class, 'row-title')]/div[contains(@class, 'info')]//text()"
-                    },
-                    matchOdd: {
-                        handicapA: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'text-goal')]//text()",
-                        teamAodd: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'odds')]//text()",
-                        handicapB: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'text-goal')]//text()",
-                        teamBodd: "./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'odds')]//text()"
-                    },
-                    odds1X2: {
-                        teamAodd: "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'odds')]//text()",
-                        teamBodd: "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'odds')]//text()",
-                        draw: "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][3]/span[contains(@class, 'odds')]//text()"
-                    },
-                    overUnder: {
-                        handicapA: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'text-goal')]//text()",
-                        teamAodd: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][1]/span[contains(@class, 'odds')]//text()",
-                        handicapB: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'text-goal')]//text()",
-                        teamBodd: "./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][2]/span[contains(@class, 'odds')]//text()"
-                    }
-                };
-
-                // Get all match components
-                const matches = document.evaluate(mainXPath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                const matches = document.evaluate(XPATH_CONFIG.main, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
                 const extractedData = [];
                 let currentId = 1;
 
-                // Process each match
                 for (let i = 0; i < matches.snapshotLength; i++) {
                     const match = matches.snapshotItem(i);
                     
-                    // Get team names and time once per match
-                    const teamA = getTextContent(xpathExpressions.matchInfo.teamA, match);
-                    const teamB = getTextContent(xpathExpressions.matchInfo.teamB, match);
-                    const matchTime = getTextContent(xpathExpressions.matchInfo.time, match);
+                    const teamA = getTextContent(XPATH_CONFIG.expressions.matchInfo.teamA, match);
+                    const teamB = getTextContent(XPATH_CONFIG.expressions.matchInfo.teamB, match);
+                    const matchTime = getTextContent(XPATH_CONFIG.expressions.matchInfo.time, match);
                     
-                    // Initialize blocks with empty details arrays
-                    const matchInfo = {
-                        name: "Kèo trận",
-                        detailNames: ["EV", "Mốc kèo", teamA, teamB],
-                        details: []
-                    };
-
-                    const overUnder = {
-                        name: "Kèo Tài Xỉu",
-                        detailNames: ["EV", "Mốc kèo", "Tài", "Xỉu"],
-                        details: []
-                    };
-
-                    const odds1X2 = {
-                        name: "Kèo 1X2",
-                        detailNames: ["EV", teamA, teamB, "Hoà"],
-                        details: []
-                    };
-
-                    // Get all odds groups for this match
-                    const oddsGroups = document.evaluate(oddsGroupXPath, match, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-                    
-                    // Process each odds group
-                    for (let j = 0; j < oddsGroups.snapshotLength; j++) {
-                        const oddsGroup = oddsGroups.snapshotItem(j);
-                        const matchHandi = getTextContent(xpathExpressions.matchOdd.handicapA, oddsGroup) === ""? getTextContent(xpathExpressions.matchOdd.handicapB, oddsGroup) : getTextContent(xpathExpressions.matchOdd.handicapA, oddsGroup);
-                        // Extract and add match odds
-                        matchInfo.details.push([
-                            ["-EV-",0],
-                            [matchHandi,0],
-                            [getTextContent(xpathExpressions.matchOdd.teamAodd, oddsGroup),getTextContent(xpathExpressions.matchOdd.handicapA, oddsGroup)===""?0:1],
-                            [getTextContent(xpathExpressions.matchOdd.teamBodd, oddsGroup),getTextContent(xpathExpressions.matchOdd.handicapB, oddsGroup)===""?0:1]
-                        ]);
-
-                        // Extract and add over/under odds
-                        overUnder.details.push([
-                            ["-EV-",0],
-                            [getTextContent(xpathExpressions.overUnder.handicapA, oddsGroup),0],
-                            [getTextContent(xpathExpressions.overUnder.teamAodd, oddsGroup),0],
-                            [getTextContent(xpathExpressions.overUnder.teamBodd, oddsGroup),0]
-                        ]);
-
-                        // Extract and add 1X2 odds
-                        odds1X2.details.push([
-                            ["-EV-",0],
-                            [getTextContent(xpathExpressions.odds1X2.teamAodd, oddsGroup),0],
-                            [getTextContent(xpathExpressions.odds1X2.teamBodd, oddsGroup),0],
-                            [getTextContent(xpathExpressions.odds1X2.draw, oddsGroup),0]
-                        ]);
-                    }
-
-                    // Add to extracted data
+                    const matchData = extractMatchData(match, teamA, teamB);
                     extractedData.push({
                         id: currentId++,
-                        blocks: [matchInfo, overUnder, odds1X2]
+                        blocks: matchData
                     });
                 }
 
@@ -172,6 +203,69 @@
         }
 
         /**
+         * Extracts data for a single match
+         * @param {Node} match - Match DOM node
+         * @param {string} teamA - Team A name
+         * @param {string} teamB - Team B name
+         * @returns {Array} - Array of odds blocks
+         */
+        function extractMatchData(match, teamA, teamB) {
+            const matchInfo = createOddsBlock("Kèo trận", ["EV", "Mốc kèo", teamA, teamB]);
+            const overUnder = createOddsBlock("Kèo Tài Xỉu", ["EV", "Mốc kèo", "Tài", "Xỉu"]);
+            const odds1X2 = createOddsBlock("Kèo 1X2", ["EV", teamA, teamB, "Hoà"]);
+
+            const oddsGroups = document.evaluate(XPATH_CONFIG.oddsGroup, match, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+            
+            for (let j = 0; j < oddsGroups.snapshotLength; j++) {
+                const oddsGroup = oddsGroups.snapshotItem(j);
+                
+                extractOddsFromGroup(oddsGroup, matchInfo, overUnder, odds1X2);
+            }
+
+            return [matchInfo, overUnder, odds1X2];
+        }
+
+        /**
+         * Extracts odds data from a single odds group
+         * @param {Node} oddsGroup - Odds group DOM node
+         * @param {Object} matchInfo - Match info block
+         * @param {Object} overUnder - Over/under block
+         * @param {Object} odds1X2 - 1X2 odds block
+         */
+        function extractOddsFromGroup(oddsGroup, matchInfo, overUnder, odds1X2) {
+            const matchHandi = getTextContent(XPATH_CONFIG.expressions.matchOdd.handicapA, oddsGroup) === "" 
+                ? getTextContent(XPATH_CONFIG.expressions.matchOdd.handicapB, oddsGroup) 
+                : getTextContent(XPATH_CONFIG.expressions.matchOdd.handicapA, oddsGroup);
+
+            // Match odds
+            matchInfo.details.push([
+                ["-EV-", 0],
+                [matchHandi, 0],
+                [getTextContent(XPATH_CONFIG.expressions.matchOdd.teamAodd, oddsGroup), 
+                 getTextContent(XPATH_CONFIG.expressions.matchOdd.handicapA, oddsGroup) === "" ? 0 : 1],
+                [getTextContent(XPATH_CONFIG.expressions.matchOdd.teamBodd, oddsGroup), 
+                 getTextContent(XPATH_CONFIG.expressions.matchOdd.handicapB, oddsGroup) === "" ? 0 : 1]
+            ]);
+
+            // Over/under odds
+            overUnder.details.push([
+                ["-EV-", 0],
+                [getTextContent(XPATH_CONFIG.expressions.overUnder.handicapA, oddsGroup), 0],
+                [getTextContent(XPATH_CONFIG.expressions.overUnder.teamAodd, oddsGroup), 0],
+                [getTextContent(XPATH_CONFIG.expressions.overUnder.teamBodd, oddsGroup), 0]
+            ]);
+
+            // 1X2 odds
+            odds1X2.details.push([
+                ["-EV-", 0],
+                [getTextContent(XPATH_CONFIG.expressions.odds1X2.teamAodd, oddsGroup), 0],
+                [getTextContent(XPATH_CONFIG.expressions.odds1X2.teamBodd, oddsGroup), 0],
+                [getTextContent(XPATH_CONFIG.expressions.odds1X2.draw, oddsGroup), 0]
+            ]);
+        }
+
+        // ==================== TABLE UPDATES ====================
+        /**
          * Updates the popup table with extracted data
          * @param {Array} data - Array of match data
          * @param {HTMLElement} tbody - Table body element to update
@@ -179,146 +273,104 @@
         function updateTableWithData(data, tbody) {
             try {
                 console.log('Odds Collector: Updating table with data...');
-                // Clear existing table body
                 tbody.innerHTML = '';
                 
-                // Process each entity
                 data.forEach((entity, entityIndex) => {
-                    // Calculate total rows for this entity (block name + detail names + all detail rows)
                     const maxDetails = Math.max(...entity.blocks.map(block => block.details.length));
-                    const totalRows = 2 + maxDetails; // 2 for block name and detail names rows
+                    const totalRows = 2 + maxDetails;
                     
-                    // Create rows for this entity
-                    for (let rowIndex = 0; rowIndex < totalRows; rowIndex++) {
-                        const tr = document.createElement('tr');
-                        
-                        // Add order number (merged cell)
-                        if (rowIndex === 0) {
-                            const td = document.createElement('td');
-                            td.textContent = entity.id;
-                            td.style.cssText = `
-                                border: 1px solid #ccc;
-                                padding: 4px;
-                                text-align: center;
-                                vertical-align: middle;
-                                word-wrap: break-word;
-                                word-break: break-word;
-                                min-width: 30px;
-                            `;
-                            td.rowSpan = totalRows;
-                            tr.appendChild(td);
-                        }
-
-                        // Add blocks
-                        entity.blocks.forEach((block, blockIndex) => {
-                            if (rowIndex === 0) {
-                                // Block name row
-                                const td = document.createElement('td');
-                                td.textContent = block.name;
-                                td.style.cssText = `
-                                    border: 1px solid #ccc;
-                                    padding: 4px;
-                                    text-align: center;
-                                    background-color: #f8f9fa;
-                                    font-weight: bold;
-                                    word-wrap: break-word;
-                                    word-break: break-word;
-                                    min-width: 80px;
-                                `;
-                                td.colSpan = 4;
-                                tr.appendChild(td);
-                            } else if (rowIndex === 1) {
-                                // Detail names row
-                                block.detailNames.forEach(name => {
-                                    const td = document.createElement('td');
-                                    td.textContent = name;
-                                    td.style.cssText = `
-                                        border: 1px solid #ccc;
-                                        padding: 4px;
-                                        text-align: center;
-                                        background-color: #f8f9fa;
-                                        word-wrap: break-word;
-                                        word-break: break-word;
-                                        min-width: 60px;
-                                    `;
-                                    tr.appendChild(td);
-                                });
-                            } else {
-                                // Detail values rows
-                                const detailIndex = rowIndex - 2;
-                                const details = block.details[detailIndex] || ['', '', '', ''];
-                                details.forEach(value => {
-                                    const td = document.createElement('td');
-                                    td.textContent = value[0];
-                                    td.style.cssText = `
-                                        border: 1px solid #ccc;
-                                        padding: 4px;
-                                        text-align: center;
-                                        word-wrap: break-word;
-                                        word-break: break-word;
-                                        min-width: 60px;
-                                    `;
-                                    if (value[1] == 1) {  // check the condition from data
-                                        td.style.backgroundColor = '#ffffe0';  // change the background color to light yellow
-                                    }
-                                    tr.appendChild(td);
-                                });
-                            }
-                        });
-
-                        // Add empty column for future use
-                        if (rowIndex === 0) {
-                            const td = document.createElement('td');
-                            td.style.cssText = `
-                                border: 1px solid #ccc;
-                                padding: 4px;
-                                min-width: 30px;
-                            `;
-                            td.rowSpan = totalRows;
-                            tr.appendChild(td);
-                        }
-
-                        tbody.appendChild(tr);
-                    }
+                    createTableRowsForEntity(entity, totalRows, tbody);
                 });
 
-                // Calculate and set popup width based on table content
-                const table = tbody.closest('table');
-                if (table) {
-                    // Force a reflow to get accurate measurements
-                    table.style.display = 'none';
-                    table.offsetHeight; // Force reflow
-                    table.style.display = '';
-
-                    // Get the total width of all columns
-                    const totalWidth = Array.from(table.querySelectorAll('th')).reduce((sum, th) => {
-                        return sum + th.offsetWidth;
-                    }, 0);
-
-                    // Add padding and borders
-                    const popup = document.getElementById('odds-collector-popup');
-                    if (popup) {
-                        const padding = 20; // Account for popup padding
-                        const borders = 2; // Account for borders
-                        const newWidth = Math.min(Math.max(totalWidth + padding + borders, 300), window.innerWidth - 40);
-                        
-                        // Force a reflow before setting the new width
-                        popup.offsetHeight;
-                        popup.style.width = `${newWidth}px`;
-                        
-                        // Update original dimensions to store latest size
-                        originalWidth = newWidth;
-                        originalHeight = popup.offsetHeight;
-                        
-                        // Log the width change
-                        window.logToPopup(`Popup width adjusted to ${newWidth}px`);
-                    }
-                }
+                adjustPopupWidth();
             } catch (error) {
                 console.error('Odds Collector: Error in updateTableWithData:', error);
             }
         }
 
+        /**
+         * Creates table rows for a single entity
+         * @param {Object} entity - Entity data
+         * @param {number} totalRows - Total number of rows for this entity
+         * @param {HTMLElement} tbody - Table body element
+         */
+        function createTableRowsForEntity(entity, totalRows, tbody) {
+            for (let rowIndex = 0; rowIndex < totalRows; rowIndex++) {
+                const tr = document.createElement('tr');
+                
+                if (rowIndex === 0) {
+                    tr.appendChild(createTableCell(entity.id, { 
+                        rowSpan: totalRows, 
+                        style: 'min-width: 30px;' 
+                    }));
+                }
+
+                entity.blocks.forEach((block, blockIndex) => {
+                    if (rowIndex === 0) {
+                        tr.appendChild(createTableCell(block.name, { 
+                            colSpan: 4, 
+                            style: `background-color: ${CONSTANTS.COLORS.HEADER_BACKGROUND}; font-weight: bold; min-width: 80px;` 
+                        }));
+                    } else if (rowIndex === 1) {
+                        block.detailNames.forEach(name => {
+                            tr.appendChild(createTableCell(name, { 
+                                style: `background-color: ${CONSTANTS.COLORS.HEADER_BACKGROUND}; min-width: 60px;` 
+                            }));
+                        });
+                    } else {
+                        const detailIndex = rowIndex - 2;
+                        const details = block.details[detailIndex] || ['', '', '', ''];
+                        details.forEach(value => {
+                            const style = value[1] == 1 ? `background-color: ${CONSTANTS.COLORS.HIGHLIGHT};` : '';
+                            tr.appendChild(createTableCell(value[0], { style }));
+                        });
+                    }
+                });
+
+                if (rowIndex === 0) {
+                    tr.appendChild(createTableCell('', { 
+                        rowSpan: totalRows, 
+                        style: 'min-width: 30px;' 
+                    }));
+                }
+
+                tbody.appendChild(tr);
+            }
+        }
+
+        /**
+         * Adjusts popup width based on table content
+         */
+        function adjustPopupWidth() {
+            const table = document.querySelector('#odds-collector-popup table');
+            if (!table) return;
+
+            table.style.display = 'none';
+            table.offsetHeight; // Force reflow
+            table.style.display = '';
+
+            const totalWidth = Array.from(table.querySelectorAll('th')).reduce((sum, th) => {
+                return sum + th.offsetWidth;
+            }, 0);
+
+            const popup = document.getElementById('odds-collector-popup');
+            if (popup) {
+                const newWidth = Math.min(
+                    Math.max(totalWidth + CONSTANTS.POPUP.PADDING + CONSTANTS.POPUP.BORDER_WIDTH, CONSTANTS.POPUP.MIN_WIDTH), 
+                    window.innerWidth - CONSTANTS.POPUP.MARGIN_FROM_EDGE
+                );
+                
+                popup.offsetHeight; // Force reflow
+                popup.style.width = `${newWidth}px`;
+                
+                state.originalWidth = newWidth;
+                state.originalHeight = popup.offsetHeight;
+                
+                window.logToPopup(`Popup width adjusted to ${newWidth}px`);
+            }
+        }
+
+        // ==================== REFRESH MANAGEMENT ====================
         /**
          * Main refresh function - extracts and updates data
          * Also manages refresh interval based on results
@@ -329,20 +381,444 @@
                 const extractedData = extractDataFromPage();
                 updateTableWithData(extractedData, window.oddsCollectorTbody);
                 
-                // Update interval based on match results
-                if (extractedData.length === 0) {
-                    window.oddsCollectorInterval = 2;
-                    window.logToPopup(`No matches found. Changing refresh interval to 2s`);
-                } else {
-                    window.oddsCollectorInterval = 30;
-                    window.logToPopup(`Found ${extractedData.length} matches. Changing refresh interval to 30s`);
-                }
-                
+                updateRefreshInterval(extractedData.length);
                 window.logToPopup(`Successfully extracted ${extractedData.length} matches at ${new Date().toLocaleTimeString()}`);
             } catch (error) {
                 console.error('Odds Collector: Error in refreshData:', error);
                 window.logToPopup(`Error extracting data: ${error.message}`);
             }
+        }
+
+        /**
+         * Updates refresh interval based on match results
+         * @param {number} matchCount - Number of matches found
+         */
+        function updateRefreshInterval(matchCount) {
+            if (matchCount === 0) {
+                state.currentInterval = CONSTANTS.REFRESH.NO_MATCHES_INTERVAL;
+                window.logToPopup(`No matches found. Changing refresh interval to ${state.currentInterval}s`);
+            } else {
+                state.currentInterval = CONSTANTS.REFRESH.MATCHES_FOUND_INTERVAL;
+                window.logToPopup(`Found ${matchCount} matches. Changing refresh interval to ${state.currentInterval}s`);
+            }
+        }
+
+        /**
+         * Starts the auto-refresh interval
+         * Manages countdown and refresh timing
+         */
+        function startRefreshInterval() {
+            try {
+                if (state.refreshIntervalId) {
+                    clearInterval(state.refreshIntervalId);
+                }
+                
+                state.refreshIntervalId = setInterval(() => {
+                    if (!state.isPaused) {
+                        state.timeLeft--;
+                        if (state.timeLeft <= 0) {
+                            refreshData();
+                            state.timeLeft = state.currentInterval;
+                        }
+                        window.oddsCollectorRefreshIndicator.textContent = `Auto-refresh in: ${state.timeLeft}s`;
+                    }
+                }, 1000);
+            } catch (error) {
+                console.error('Odds Collector: Error in startRefreshInterval:', error);
+            }
+        }
+
+        // ==================== EVENT HANDLERS ====================
+        /**
+         * Sets up drag and drop functionality for the popup
+         * @param {HTMLElement} popup - Popup element
+         * @param {HTMLElement} header - Header element
+         */
+        function setupDragAndDrop(popup, header) {
+            const handleMouseDown = (e) => {
+                if (e.target === header || e.target.closest('.title-container') || e.target.closest('.title')) {
+                    state.isDragging = true;
+                    state.startX = e.clientX;
+                    state.startY = e.clientY;
+                    const rect = popup.getBoundingClientRect();
+                    state.startLeft = rect.left;
+                    state.startTop = rect.top;
+                    e.preventDefault();
+                }
+            };
+
+            const handleMouseMove = (e) => {
+                if (!state.isDragging) return;
+                
+                const dx = e.clientX - state.startX;
+                const dy = e.clientY - state.startY;
+                
+                popup.style.left = `${state.startLeft + dx}px`;
+                popup.style.top = `${state.startTop + dy}px`;
+            };
+
+            const handleMouseUp = () => {
+                state.isDragging = false;
+            };
+
+            header.addEventListener('mousedown', handleMouseDown);
+            document.addEventListener('mousemove', handleMouseMove);
+            document.addEventListener('mouseup', handleMouseUp);
+
+            // Store cleanup function
+            popup._dragCleanup = () => {
+                header.removeEventListener('mousedown', handleMouseDown);
+                document.removeEventListener('mousemove', handleMouseMove);
+                document.removeEventListener('mouseup', handleMouseUp);
+            };
+        }
+
+        /**
+         * Sets up resize functionality for the popup
+         * @param {HTMLElement} popup - Popup element
+         * @param {HTMLElement} resizeHandle - Resize handle element
+         */
+        function setupResize(popup, resizeHandle) {
+            const handleMouseDown = (e) => {
+                state.isResizing = true;
+                state.startX = e.clientX;
+                state.startY = e.clientY;
+                state.startWidth = popup.offsetWidth;
+                state.startHeight = popup.offsetHeight;
+                e.preventDefault();
+            };
+
+            const handleMouseMove = (e) => {
+                if (!state.isResizing) return;
+
+                const dx = e.clientX - state.startX;
+                const dy = e.clientY - state.startY;
+                
+                const newWidth = Math.max(CONSTANTS.POPUP.MIN_WIDTH, state.startWidth + dx);
+                const newHeight = Math.max(CONSTANTS.POPUP.MIN_HEIGHT, state.startHeight + dy);
+                
+                popup.style.width = `${newWidth}px`;
+                popup.style.height = `${newHeight}px`;
+                
+                state.originalWidth = newWidth;
+                state.originalHeight = newHeight;
+            };
+
+            const handleMouseUp = () => {
+                state.isResizing = false;
+            };
+
+            resizeHandle.addEventListener('mousedown', handleMouseDown);
+            document.addEventListener('mousemove', handleMouseMove);
+            document.addEventListener('mouseup', handleMouseUp);
+
+            // Store cleanup function
+            popup._resizeCleanup = () => {
+                resizeHandle.removeEventListener('mousedown', handleMouseDown);
+                document.removeEventListener('mousemove', handleMouseMove);
+                document.removeEventListener('mouseup', handleMouseUp);
+            };
+        }
+
+        /**
+         * Sets up toggle functionality for the popup
+         * @param {HTMLElement} popup - Popup element
+         * @param {HTMLElement} toggleBtn - Toggle button
+         * @param {HTMLElement} contentWrapper - Content wrapper
+         */
+        function setupToggle(popup, toggleBtn, contentWrapper) {
+            toggleBtn.addEventListener('click', () => {
+                state.isCollapsed = !state.isCollapsed;
+                if (state.isCollapsed) {
+                    popup.style.height = `${CONSTANTS.POPUP.HEADER_HEIGHT}px`;
+                    popup.style.width = `${CONSTANTS.POPUP.DEFAULT_WIDTH}px`;
+                    contentWrapper.style.display = 'none';
+                    popup.style.minHeight = `${CONSTANTS.POPUP.HEADER_HEIGHT}px`;
+                    popup.style.minWidth = `${CONSTANTS.POPUP.DEFAULT_WIDTH}px`;
+                    toggleBtn.textContent = '+';
+                } else {
+                    popup.style.height = `${state.originalHeight}px`;
+                    popup.style.width = `${state.originalWidth}px`;
+                    popup.style.minHeight = `${CONSTANTS.POPUP.MIN_HEIGHT}px`;
+                    popup.style.minWidth = `${CONSTANTS.POPUP.MIN_WIDTH}px`;
+                    contentWrapper.style.display = 'flex';
+                    toggleBtn.textContent = '−';
+                }
+            });
+        }
+
+        /**
+         * Sets up refresh button functionality
+         * @param {HTMLElement} refreshButton - Refresh button
+         */
+        function setupRefreshButton(refreshButton) {
+            refreshButton.addEventListener('click', () => {
+                try {
+                    refreshButton.classList.add('spinning');
+                    refreshData();
+                    state.timeLeft = state.currentInterval;
+                    window.oddsCollectorRefreshIndicator.textContent = `Auto-refresh in: ${state.timeLeft}s`;
+                    setTimeout(() => {
+                        refreshButton.classList.remove('spinning');
+                    }, CONSTANTS.ANIMATIONS.SPIN_DURATION);
+                    window.logToPopup('Manual refresh triggered');
+                } catch (error) {
+                    console.error('Odds Collector: Error in refresh button click:', error);
+                }
+            });
+        }
+
+        /**
+         * Sets up refresh indicator functionality
+         * @param {HTMLElement} refreshIndicator - Refresh indicator
+         * @param {HTMLElement} header - Header element
+         * @param {HTMLElement} refreshButton - Refresh button
+         */
+        function setupRefreshIndicator(refreshIndicator, header, refreshButton) {
+            refreshIndicator.addEventListener('click', () => {
+                try {
+                    if (state.isPaused) {
+                        // Resume refresh
+                        state.isPaused = false;
+                        header.classList.remove('flashing');
+                        refreshData();
+                        state.timeLeft = state.currentInterval;
+                        refreshIndicator.textContent = `Auto-refresh in: ${state.timeLeft}s`;
+                        refreshButton.style.display = 'flex';
+                        startRefreshInterval();
+                        window.logToPopup('Auto-refresh resumed with immediate refresh');
+                    } else {
+                        // Pause refresh
+                        state.isPaused = true;
+                        header.classList.add('flashing');
+                        refreshIndicator.textContent = 'Auto-refresh is paused';
+                        refreshButton.style.display = 'none';
+                        window.logToPopup('Auto-refresh paused');
+                    }
+                } catch (error) {
+                    console.error('Odds Collector: Error in refresh indicator click:', error);
+                }
+            });
+        }
+
+        // ==================== POPUP CREATION ====================
+        /**
+         * Creates the header section of the popup
+         * @returns {HTMLElement} - Header element
+         */
+        function createHeader() {
+            const header = document.createElement('div');
+            header.style.cssText = `
+                padding: 8px;
+                background: linear-gradient(to right, ${CONSTANTS.COLORS.HEADER_GRADIENT_START}, ${CONSTANTS.COLORS.HEADER_GRADIENT_END});
+                border-bottom: 1px solid ${CONSTANTS.COLORS.BORDER};
+                cursor: move;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                user-select: none;
+                flex-shrink: 0;
+                box-sizing: border-box;
+                height: ${CONSTANTS.POPUP.HEADER_HEIGHT}px;
+                line-height: 24px;
+                color: white;
+            `;
+
+            return header;
+        }
+
+        /**
+         * Creates the title section of the header
+         * @returns {HTMLElement} - Title container
+         */
+        function createTitleSection() {
+            const titleContainer = document.createElement('div');
+            titleContainer.className = 'title-container';
+            titleContainer.style.cssText = `
+                display: flex;
+                align-items: center;
+                min-width: 0;
+                flex: 1;
+                gap: 16px;
+            `;
+
+            const title = document.createElement('span');
+            title.className = 'title';
+            title.textContent = 'Odds Collector';
+            title.style.cssText = `
+                font-weight: bold;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                color: white;
+                flex-shrink: 0;
+            `;
+
+            titleContainer.appendChild(title);
+            return titleContainer;
+        }
+
+        /**
+         * Creates the refresh controls section
+         * @returns {Object} - Object containing refresh elements
+         */
+        function createRefreshControls() {
+            const refreshContainer = document.createElement('div');
+            refreshContainer.style.cssText = `
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                flex-shrink: 0;
+            `;
+
+            const refreshIndicator = document.createElement('span');
+            refreshIndicator.style.cssText = `
+                font-size: 12px;
+                color: #ccc;
+                min-width: 80px;
+                text-align: right;
+                cursor: pointer;
+                user-select: none;
+            `;
+            refreshIndicator.textContent = `Auto-refresh in: ${state.timeLeft}s`;
+
+            const refreshButton = document.createElement('button');
+            refreshButton.innerHTML = '↻';
+            refreshButton.style.cssText = `
+                background: none;
+                border: none;
+                color: #ccc;
+                cursor: pointer;
+                font-size: 14px;
+                padding: 0 4px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: transform 0.2s;
+            `;
+            refreshButton.title = 'Refresh now';
+
+            refreshContainer.appendChild(refreshIndicator);
+            refreshContainer.appendChild(refreshButton);
+
+            return { refreshContainer, refreshIndicator, refreshButton };
+        }
+
+        /**
+         * Creates the toggle button
+         * @returns {HTMLElement} - Toggle button
+         */
+        function createToggleButton() {
+            const toggleBtn = document.createElement('button');
+            toggleBtn.textContent = '−';
+            toggleBtn.style.cssText = `
+                border: none;
+                background: none;
+                cursor: pointer;
+                font-size: 16px;
+                padding: 0 5px;
+                flex-shrink: 0;
+                margin-left: 8px;
+                color: white;
+            `;
+            return toggleBtn;
+        }
+
+        /**
+         * Creates the main content area
+         * @returns {Object} - Object containing content elements
+         */
+        function createMainContent() {
+            const contentWrapper = document.createElement('div');
+            contentWrapper.style.cssText = `
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                min-height: 0;
+                overflow: hidden;
+                box-sizing: border-box;
+            `;
+
+            const mainContent = document.createElement('div');
+            mainContent.style.cssText = `
+                flex: 1;
+                padding: 10px;
+                overflow-y: auto;
+                min-height: 0;
+                box-sizing: border-box;
+            `;
+
+            const table = createTable();
+            mainContent.appendChild(table);
+
+            const logArea = document.createElement('textarea');
+            logArea.style.cssText = `
+                width: calc(100% - 20px);
+                height: 100px;
+                margin: 10px;
+                padding: 5px;
+                border: 1px solid ${CONSTANTS.COLORS.BORDER};
+                resize: none;
+                box-sizing: border-box;
+                flex-shrink: 0;
+            `;
+            logArea.readOnly = true;
+
+            contentWrapper.appendChild(mainContent);
+            contentWrapper.appendChild(logArea);
+
+            return { contentWrapper, mainContent, table, logArea };
+        }
+
+        /**
+         * Creates the data table
+         * @returns {HTMLElement} - Table element
+         */
+        function createTable() {
+            const table = document.createElement('table');
+            table.style.cssText = `
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 12px;
+                margin-bottom: 10px;
+                table-layout: auto;
+            `;
+
+            const thead = document.createElement('thead');
+            thead.innerHTML = `
+                <tr>
+                    <th style="width: 5%; border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 4px; word-wrap: break-word; word-break: break-word; min-width: 30px;">#</th>
+                    <th colspan="4" style="border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 4px; word-wrap: break-word; word-break: break-word; min-width: 80px;"></th>
+                    <th colspan="4" style="border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 4px; word-wrap: break-word; word-break: break-word; min-width: 80px;"></th>
+                    <th colspan="4" style="border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 4px; word-wrap: break-word; word-break: break-word; min-width: 80px;"></th>
+                    <th style="width: 5%; border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 4px; word-wrap: break-word; word-break: break-word; min-width: 30px;"></th>
+                </tr>
+            `;
+            table.appendChild(thead);
+
+            const tbody = document.createElement('tbody');
+            table.appendChild(tbody);
+
+            return table;
+        }
+
+        /**
+         * Creates the resize handle
+         * @returns {HTMLElement} - Resize handle
+         */
+        function createResizeHandle() {
+            const resizeHandle = document.createElement('div');
+            resizeHandle.style.cssText = `
+                position: absolute;
+                right: 0;
+                bottom: 0;
+                width: 10px;
+                height: 10px;
+                cursor: se-resize;
+                background: linear-gradient(135deg, transparent 50%, ${CONSTANTS.COLORS.BORDER} 50%);
+                z-index: 1;
+            `;
+            return resizeHandle;
         }
 
         /**
@@ -352,6 +828,7 @@
         function createFloatingPopup() {
             try {
                 console.log('Odds Collector: Creating popup...');
+                
                 // Create main container
                 const popup = document.createElement('div');
                 popup.id = 'odds-collector-popup';
@@ -359,12 +836,12 @@
                     position: fixed;
                     top: 20px;
                     left: 20px;
-                    width: 300px;
-                    min-width: 200px;
-                    max-width: calc(100vw - 40px);
-                    max-height: calc(100vh - 40px);
-                    background: #f0f8ff;
-                    border: 1px solid #ccc;
+                    width: ${CONSTANTS.POPUP.DEFAULT_WIDTH}px;
+                    min-width: ${CONSTANTS.POPUP.MIN_WIDTH}px;
+                    max-width: calc(100vw - ${CONSTANTS.POPUP.MARGIN_FROM_EDGE}px);
+                    max-height: calc(100vh - ${CONSTANTS.POPUP.MARGIN_FROM_EDGE}px);
+                    background: ${CONSTANTS.COLORS.BACKGROUND};
+                    border: 1px solid ${CONSTANTS.COLORS.BORDER};
                     border-radius: 4px;
                     box-shadow: 0 2px 10px rgba(0,0,0,0.1);
                     z-index: 9999;
@@ -375,301 +852,35 @@
                     overflow: hidden;
                 `;
 
-                // Create header bar
-                const header = document.createElement('div');
-                header.style.cssText = `
-                    padding: 8px;
-                    background: linear-gradient(to right, #8B0000, #FF6B6B);
-                    border-bottom: 1px solid #ccc;
-                    cursor: move;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    user-select: none;
-                    flex-shrink: 0;
-                    box-sizing: border-box;
-                    height: 40px;
-                    line-height: 24px;
-                    color: white;
-                `;
+                // Create header
+                const header = createHeader();
+                const titleContainer = createTitleSection();
+                const { refreshContainer, refreshIndicator, refreshButton } = createRefreshControls();
+                const toggleBtn = createToggleButton();
 
-                // Create title container
-                const titleContainer = document.createElement('div');
-                titleContainer.style.cssText = `
-                    display: flex;
-                    align-items: center;
-                    min-width: 0;
-                    flex: 1;
-                    gap: 16px;
-                `;
-
-                // Create title
-                const title = document.createElement('span');
-                title.textContent = 'Odds Collector';
-                title.style.cssText = `
-                    font-weight: bold;
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                    color: white;
-                    flex-shrink: 0;
-                `;
-
-                // Create refresh indicator container
-                const refreshContainer = document.createElement('div');
-                refreshContainer.style.cssText = `
-                    display: flex;
-                    align-items: center;
-                    gap: 8px;
-                    flex-shrink: 0;
-                `;
-
-                // Create refresh indicator
-                const refreshIndicator = document.createElement('span');
-                refreshIndicator.style.cssText = `
-                    font-size: 12px;
-                    color: #ccc;
-                    min-width: 80px;
-                    text-align: right;
-                    cursor: pointer;
-                    user-select: none;
-                `;
-                refreshIndicator.textContent = 'Auto-refresh in: 5s';
-
-                // Create refresh button
-                const refreshButton = document.createElement('button');
-                refreshButton.innerHTML = '↻'; // Refresh symbol
-                refreshButton.style.cssText = `
-                    background: none;
-                    border: none;
-                    color: #ccc;
-                    cursor: pointer;
-                    font-size: 14px;
-                    padding: 0 4px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    transition: transform 0.2s;
-                `;
-                refreshButton.title = 'Refresh now';
-
-                // Add flashing animation style
-                const style = document.createElement('style');
-                style.textContent = `
-                    @keyframes flash {
-                        0% { background: linear-gradient(to right, #8B0000, #FF6B6B); }
-                        50% { background: linear-gradient(to right, #FF6B6B, #8B0000); }
-                        100% { background: linear-gradient(to right, #8B0000, #FF6B6B); }
-                    }
-                    .flashing {
-                        animation: flash 1s infinite;
-                    }
-                    @keyframes spin {
-                        from { transform: rotate(0deg); }
-                        to { transform: rotate(360deg); }
-                    }
-                    .spinning {
-                        animation: spin 1s linear infinite;
-                    }
-                `;
-                document.head.appendChild(style);
-
-                // Create toggle button
-                const toggleBtn = document.createElement('button');
-                toggleBtn.textContent = '−';
-                toggleBtn.style.cssText = `
-                    border: none;
-                    background: none;
-                    cursor: pointer;
-                    font-size: 16px;
-                    padding: 0 5px;
-                    flex-shrink: 0;
-                    margin-left: 8px;
-                    color: white;
-                `;
-
-                // Create content wrapper
-                const contentWrapper = document.createElement('div');
-                contentWrapper.style.cssText = `
-                    flex: 1;
-                    display: flex;
-                    flex-direction: column;
-                    min-height: 0;
-                    overflow: hidden;
-                    box-sizing: border-box;
-                `;
-
-                // Create main content container
-                const mainContent = document.createElement('div');
-                mainContent.style.cssText = `
-                    flex: 1;
-                    padding: 10px;
-                    overflow-y: auto;
-                    min-height: 0;
-                    box-sizing: border-box;
-                `;
-
-                // Create table
-                const table = document.createElement('table');
-                table.style.cssText = `
-                    width: 100%;
-                    border-collapse: collapse;
-                    font-size: 12px;
-                    margin-bottom: 10px;
-                    table-layout: auto;
-                `;
-
-                // Create table header
-                const thead = document.createElement('thead');
-                thead.innerHTML = `
-                    <tr>
-                        <th style="width: 5%; border: 1px solid #ccc; padding: 4px; word-wrap: break-word; word-break: break-word; min-width: 30px;">#</th>
-                        <th colspan="4" style="border: 1px solid #ccc; padding: 4px; word-wrap: break-word; word-break: break-word; min-width: 80px;"></th>
-                        <th colspan="4" style="border: 1px solid #ccc; padding: 4px; word-wrap: break-word; word-break: break-word; min-width: 80px;"></th>
-                        <th colspan="4" style="border: 1px solid #ccc; padding: 4px; word-wrap: break-word; word-break: break-word; min-width: 80px;"></th>
-                        <th style="width: 5%; border: 1px solid #ccc; padding: 4px; word-wrap: break-word; word-break: break-word; min-width: 30px;"></th>
-                    </tr>
-                `;
-                table.appendChild(thead);
-
-                // Create table body
-                const tbody = document.createElement('tbody');
-                table.appendChild(tbody);
-                mainContent.appendChild(table);
-
-                // Create log area
-                const logArea = document.createElement('textarea');
-                logArea.style.cssText = `
-                    width: calc(100% - 20px);
-                    height: 100px;
-                    margin: 10px;
-                    padding: 5px;
-                    border: 1px solid #ccc;
-                    resize: none;
-                    box-sizing: border-box;
-                    flex-shrink: 0;
-                `;
-                logArea.readOnly = true;
-
-                // Create resize handle
-                const resizeHandle = document.createElement('div');
-                resizeHandle.style.cssText = `
-                    position: absolute;
-                    right: 0;
-                    bottom: 0;
-                    width: 10px;
-                    height: 10px;
-                    cursor: se-resize;
-                    background: linear-gradient(135deg, transparent 50%, #ccc 50%);
-                    z-index: 1;
-                `;
+                // Create content
+                const { contentWrapper, mainContent, table, logArea } = createMainContent();
+                const tbody = table.querySelector('tbody');
+                const resizeHandle = createResizeHandle();
 
                 // Assemble the popup
-                titleContainer.appendChild(title);
                 titleContainer.appendChild(refreshContainer);
                 header.appendChild(titleContainer);
                 header.appendChild(toggleBtn);
-                contentWrapper.appendChild(mainContent);
-                contentWrapper.appendChild(logArea);
                 popup.appendChild(header);
                 popup.appendChild(contentWrapper);
                 popup.appendChild(resizeHandle);
 
-                // Add refresh button to container
-                refreshContainer.appendChild(refreshIndicator);
-                refreshContainer.appendChild(refreshButton);
-
                 // Store original dimensions
-                originalWidth = 300;
-                originalHeight = popup.offsetHeight;
-                const headerHeight = header.offsetHeight;
+                state.originalWidth = CONSTANTS.POPUP.DEFAULT_WIDTH;
+                state.originalHeight = popup.offsetHeight;
 
-                // Make popup draggable with improved performance
-                let isDragging = false;
-                let startX, startY;
-                let startLeft, startTop;
-
-                header.addEventListener('mousedown', (e) => {
-                    if (e.target === header || e.target === title || e.target === titleContainer) {
-                        isDragging = true;
-                        startX = e.clientX;
-                        startY = e.clientY;
-                        const rect = popup.getBoundingClientRect();
-                        startLeft = rect.left;
-                        startTop = rect.top;
-                        e.preventDefault();
-                    }
-                });
-
-                document.addEventListener('mousemove', (e) => {
-                    if (!isDragging) return;
-                    
-                    const dx = e.clientX - startX;
-                    const dy = e.clientY - startY;
-                    
-                    popup.style.left = `${startLeft + dx}px`;
-                    popup.style.top = `${startTop + dy}px`;
-                });
-
-                document.addEventListener('mouseup', () => {
-                    isDragging = false;
-                });
-
-                // Make popup resizable
-                let isResizing = false;
-                let startWidth, startHeight;
-
-                resizeHandle.addEventListener('mousedown', (e) => {
-                    isResizing = true;
-                    startX = e.clientX;
-                    startY = e.clientY;
-                    startWidth = popup.offsetWidth;
-                    startHeight = popup.offsetHeight;
-                    e.preventDefault();
-                });
-
-                document.addEventListener('mousemove', (e) => {
-                    if (!isResizing) return;
-
-                    const dx = e.clientX - startX;
-                    const dy = e.clientY - startY;
-                    
-                    const newWidth = Math.max(200, startWidth + dx);
-                    const newHeight = Math.max(150, startHeight + dy);
-                    
-                    popup.style.width = `${newWidth}px`;
-                    popup.style.height = `${newHeight}px`;
-                    
-                    // Update original dimensions when resizing
-                    originalWidth = newWidth;
-                    originalHeight = newHeight;
-                });
-
-                document.addEventListener('mouseup', () => {
-                    isResizing = false;
-                });
-
-                // Toggle popup size
-                let isCollapsed = false;
-
-                toggleBtn.addEventListener('click', () => {
-                    isCollapsed = !isCollapsed;
-                    if (isCollapsed) {
-                        popup.style.height = '40px'; // Fixed header height
-                        popup.style.width = '300px'; // Increased width by 25% (240px * 1.25)
-                        contentWrapper.style.display = 'none';
-                        popup.style.minHeight = '40px';
-                        popup.style.minWidth = '300px'; // Increased min-width by 25%
-                        toggleBtn.textContent = '+';
-                    } else {
-                        popup.style.height = `${originalHeight}px`;
-                        popup.style.width = `${originalWidth}px`;
-                        popup.style.minHeight = '150px';
-                        popup.style.minWidth = '200px';
-                        contentWrapper.style.display = 'flex';
-                        toggleBtn.textContent = '−';
-                    }
-                });
+                // Setup event handlers
+                setupDragAndDrop(popup, header);
+                setupResize(popup, resizeHandle);
+                setupToggle(popup, toggleBtn, contentWrapper);
+                setupRefreshButton(refreshButton);
+                setupRefreshIndicator(refreshIndicator, header, refreshButton);
 
                 // Add logging function
                 window.logToPopup = function(message) {
@@ -678,55 +889,11 @@
                     logArea.scrollTop = logArea.scrollHeight;
                 };
 
-                // Store tbody reference for later use
-                window.oddsCollectorTbody = tbody;
-
                 // Store references
+                window.oddsCollectorTbody = tbody;
                 window.oddsCollectorRefreshIndicator = refreshIndicator;
                 window.oddsCollectorRefreshButton = refreshButton;
                 window.oddsCollectorHeader = header;
-
-                // Add click handler for refresh button
-                refreshButton.addEventListener('click', () => {
-                    try {
-                        refreshButton.classList.add('spinning');
-                        refreshData();
-                        timeLeft = window.oddsCollectorInterval;
-                        window.oddsCollectorRefreshIndicator.textContent = `Auto-refresh in: ${timeLeft}s`;
-                        setTimeout(() => {
-                            refreshButton.classList.remove('spinning');
-                        }, 1000);
-                        window.logToPopup('Manual refresh triggered');
-                    } catch (error) {
-                        console.error('Odds Collector: Error in refresh button click:', error);
-                    }
-                });
-
-                // Add click handler for refresh indicator
-                refreshIndicator.addEventListener('click', () => {
-                    try {
-                        if (isPaused) {
-                            // Resume refresh and trigger immediate refresh
-                            isPaused = false;
-                            window.oddsCollectorHeader.classList.remove('flashing');
-                            refreshData(); // Immediate refresh
-                            timeLeft = window.oddsCollectorInterval;
-                            window.oddsCollectorRefreshIndicator.textContent = `Auto-refresh in: ${timeLeft}s`;
-                            refreshButton.style.display = 'flex'; // Show refresh button
-                            startRefreshInterval();
-                            window.logToPopup('Auto-refresh resumed with immediate refresh');
-                        } else {
-                            // Pause refresh
-                            isPaused = true;
-                            window.oddsCollectorHeader.classList.add('flashing');
-                            window.oddsCollectorRefreshIndicator.textContent = 'Auto-refresh is paused';
-                            refreshButton.style.display = 'none'; // Hide refresh button
-                            window.logToPopup('Auto-refresh paused');
-                        }
-                    } catch (error) {
-                        console.error('Odds Collector: Error in refresh indicator click:', error);
-                    }
-                });
 
                 // Initialize refresh button visibility
                 refreshButton.style.display = 'flex';
@@ -738,28 +905,23 @@
             }
         }
 
+        // ==================== CLEANUP AND INITIALIZATION ====================
         /**
-         * Starts the auto-refresh interval
-         * Manages countdown and refresh timing
+         * Cleans up all event listeners and intervals
+         * @param {HTMLElement} popup - Popup element to cleanup
          */
-        function startRefreshInterval() {
-            try {
-                if (refreshIntervalId) {
-                    clearInterval(refreshIntervalId);
-                }
-                
-                refreshIntervalId = setInterval(() => {
-                    if (!isPaused) {
-                        timeLeft--;
-                        if (timeLeft <= 0) {
-                            refreshData();
-                            timeLeft = window.oddsCollectorInterval;
-                        }
-                        window.oddsCollectorRefreshIndicator.textContent = `Auto-refresh in: ${timeLeft}s`;
-                    }
-                }, 1000);
-            } catch (error) {
-                console.error('Odds Collector: Error in startRefreshInterval:', error);
+        function cleanup(popup) {
+            if (state.refreshIntervalId) {
+                clearInterval(state.refreshIntervalId);
+                state.refreshIntervalId = null;
+            }
+
+            if (popup._dragCleanup) {
+                popup._dragCleanup();
+            }
+
+            if (popup._resizeCleanup) {
+                popup._resizeCleanup();
             }
         }
 
@@ -779,10 +941,22 @@
 
                 // Clean up interval when popup is closed
                 window.addEventListener('unload', () => {
-                    if (refreshIntervalId) {
-                        clearInterval(refreshIntervalId);
-                    }
+                    cleanup(popup);
                 });
+
+                // Clean up when popup is removed from DOM
+                const observer = new MutationObserver((mutations) => {
+                    mutations.forEach((mutation) => {
+                        mutation.removedNodes.forEach((node) => {
+                            if (node === popup) {
+                                cleanup(popup);
+                                observer.disconnect();
+                            }
+                        });
+                    });
+                });
+
+                observer.observe(document.body, { childList: true });
             } catch (error) {
                 console.error('Odds Collector: Error in initialization:', error);
             }

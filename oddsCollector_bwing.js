@@ -207,8 +207,83 @@
             return {
                 name: name,
                 detailNames: detailNames,
-                details: []
+                details: [],
+                meta: []
             };
+        }
+
+        // ==================== EV CALCULATION UTILITIES ====================
+        let _ocUniqueIdCounter = 1;
+        function generateUniqueId() {
+            return 'ocbtn_' + (_ocUniqueIdCounter++) + '_' + Math.random().toString(36).slice(2, 6);
+        }
+
+        function ensureElementId(element) {
+            if (!element) return null;
+            const existing = element.getAttribute('data-oc-id');
+            if (existing) return existing;
+            const id = generateUniqueId();
+            try { element.setAttribute('data-oc-id', id); } catch (_) {}
+            return id;
+        }
+
+        function firstNode(xpath, context) {
+            try {
+                return document.evaluate(xpath, context, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+            } catch (_) { return null; }
+        }
+
+        function isHiddenByAria(element) {
+            try {
+                if (!element) return false;
+                let node = element;
+                while (node) {
+                    if (node.getAttribute && node.getAttribute('aria-hidden') === 'true') return true;
+                    node = node.parentElement;
+                }
+                return false;
+            } catch (_) { return false; }
+        }
+
+        function normalizeNumber(text) {
+            if (text == null) return NaN;
+            const cleaned = String(text)
+                .replace(/,/g, '.')
+                .replace(/[^0-9.\/-]/g, '')
+                .trim();
+            if (!cleaned) return NaN;
+            if (cleaned.includes('/')) {
+                const parts = cleaned.split('/').map((p) => parseFloat(p));
+                const a = parts[0];
+                const b = parts[1];
+                if (!isNaN(a) && !isNaN(b)) return (a + b) / 2;
+            }
+            const n = parseFloat(cleaned);
+            return isNaN(n) ? NaN : n;
+        }
+
+        function computeEVSpread(handicapA, oddA, handicapB, oddB) {
+            const hA = Number(handicapA);
+            const hB = Number(handicapB);
+            const oA = Number(oddA);
+            const oB = Number(oddB);
+            if (!isFinite(hA) || !isFinite(hB) || !isFinite(oA) || !isFinite(oB)) return NaN;
+            const denom = (1 - oB) * hB;
+            if (!isFinite(denom) || Math.abs(denom) < 1e-9) return NaN;
+            return ((1 - oA) * hA) / denom;
+        }
+
+        function computeEV1X2(oddA, oddB, draw) {
+            const oA = Number(oddA);
+            const oB = Number(oddB);
+            const d = Number(draw);
+            if (!isFinite(oA) || !isFinite(oB) || !isFinite(d) || Math.abs(d) < 1e-9) return NaN;
+            return (oA - oB) / d;
+        }
+
+        function formatEV(value) {
+            if (!isFinite(value)) return '-';
+            try { return value.toFixed(3); } catch { return String(value); }
         }
 
         // ==================== DATA EXTRACTION ====================
@@ -1172,35 +1247,82 @@
          * @param {Object} odds1X2 - 1X2 odds block
          */
         function extractOddsFromGroup(oddsGroup, matchInfo, overUnder, odds1X2) {
-            const matchHandi = getTextContent(XPATH_CONFIG.expressions.matchOdd.handicapA, oddsGroup) === "" 
-                ? getTextContent(XPATH_CONFIG.expressions.matchOdd.handicapB, oddsGroup) 
-                : getTextContent(XPATH_CONFIG.expressions.matchOdd.handicapA, oddsGroup);
+            const mHandiAtext = getTextContent(XPATH_CONFIG.expressions.matchOdd.handicapA, oddsGroup);
+            const mHandiBtext = getTextContent(XPATH_CONFIG.expressions.matchOdd.handicapB, oddsGroup);
+            const mHandiDisplay = mHandiAtext === "" ? mHandiBtext : mHandiAtext;
+            const mOddAtext = getTextContent(XPATH_CONFIG.expressions.matchOdd.teamAodd, oddsGroup);
+            const mOddBtext = getTextContent(XPATH_CONFIG.expressions.matchOdd.teamBodd, oddsGroup);
+            // tag buttons for clicking
+            const mBtnA = firstNode("./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][1]", oddsGroup);
+            const mBtnB = firstNode("./div[contains(@class, 'bettype-col')][1]/div[contains(@class, 'odds-button')][2]", oddsGroup);
+            const mBtnAId = ensureElementId(mBtnA);
+            const mBtnBId = ensureElementId(mBtnB);
+            const mEV = formatEV(
+                computeEVSpread(
+                    normalizeNumber(mHandiAtext),
+                    normalizeNumber(mOddAtext),
+                    normalizeNumber(mHandiBtext),
+                    normalizeNumber(mOddBtext)
+                )
+            );
 
-            // Match odds
             matchInfo.details.push([
-                ["-EV-", 0],
-                [matchHandi, 0],
-                [getTextContent(XPATH_CONFIG.expressions.matchOdd.teamAodd, oddsGroup), 
-                 getTextContent(XPATH_CONFIG.expressions.matchOdd.handicapA, oddsGroup) === "" ? 0 : 1],
-                [getTextContent(XPATH_CONFIG.expressions.matchOdd.teamBodd, oddsGroup), 
-                 getTextContent(XPATH_CONFIG.expressions.matchOdd.handicapB, oddsGroup) === "" ? 0 : 1]
+                [mEV, 0],
+                [mHandiDisplay, 0],
+                [mOddAtext, mHandiAtext === "" ? 0 : 1],
+                [mOddBtext, mHandiBtext === "" ? 0 : 1]
             ]);
+            matchInfo.meta.push({ aId: mBtnAId, bId: mBtnBId, kind: 'match' });
 
-            // Over/under odds
+            const ouHandiAtext = getTextContent(XPATH_CONFIG.expressions.overUnder.handicapA, oddsGroup);
+            const ouHandiBtext = getTextContent(XPATH_CONFIG.expressions.overUnder.handicapB, oddsGroup);
+            const ouOddAtext = getTextContent(XPATH_CONFIG.expressions.overUnder.teamAodd, oddsGroup);
+            const ouOddBtext = getTextContent(XPATH_CONFIG.expressions.overUnder.teamBodd, oddsGroup);
+            // tag OU buttons
+            const ouBtnA = firstNode("./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][1]", oddsGroup);
+            const ouBtnB = firstNode("./div[contains(@class, 'bettype-col')][2]/div[contains(@class, 'odds-button')][2]", oddsGroup);
+            const ouBtnAId = ensureElementId(ouBtnA);
+            const ouBtnBId = ensureElementId(ouBtnB);
+            const ouEV = formatEV(
+                computeEVSpread(
+                    normalizeNumber(ouHandiAtext),
+                    normalizeNumber(ouOddAtext),
+                    normalizeNumber(ouHandiBtext),
+                    normalizeNumber(ouOddBtext)
+                )
+            );
+
             overUnder.details.push([
-                ["-EV-", 0],
-                [getTextContent(XPATH_CONFIG.expressions.overUnder.handicapA, oddsGroup), 0],
-                [getTextContent(XPATH_CONFIG.expressions.overUnder.teamAodd, oddsGroup), 0],
-                [getTextContent(XPATH_CONFIG.expressions.overUnder.teamBodd, oddsGroup), 0]
+                [ouEV, 0],
+                [ouHandiAtext, 0],
+                [ouOddAtext, 0],
+                [ouOddBtext, 0]
             ]);
+            overUnder.meta.push({ aId: ouBtnAId, bId: ouBtnBId, kind: 'overunder' });
 
-            // 1X2 odds
+            const x2OddAtext = getTextContent(XPATH_CONFIG.expressions.odds1X2.teamAodd, oddsGroup);
+            const x2OddBtext = getTextContent(XPATH_CONFIG.expressions.odds1X2.teamBodd, oddsGroup);
+            const x2DrawText = getTextContent(XPATH_CONFIG.expressions.odds1X2.draw, oddsGroup);
+            // tag 1X2 buttons (A=home, B=away)
+            const x2BtnA = firstNode("./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][1]", oddsGroup);
+            const x2BtnB = firstNode("./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][2]", oddsGroup);
+            const x2BtnAId = ensureElementId(x2BtnA);
+            const x2BtnBId = ensureElementId(x2BtnB);
+            const x2EV = formatEV(
+                computeEV1X2(
+                    normalizeNumber(x2OddAtext),
+                    normalizeNumber(x2OddBtext),
+                    normalizeNumber(x2DrawText)
+                )
+            );
+
             odds1X2.details.push([
-                ["-EV-", 0],
-                [getTextContent(XPATH_CONFIG.expressions.odds1X2.teamAodd, oddsGroup), 0],
-                [getTextContent(XPATH_CONFIG.expressions.odds1X2.teamBodd, oddsGroup), 0],
-                [getTextContent(XPATH_CONFIG.expressions.odds1X2.draw, oddsGroup), 0]
+                [x2EV, 0],
+                [x2OddAtext, 0],
+                [x2OddBtext, 0],
+                [x2DrawText, 0]
             ]);
+            odds1X2.meta.push({ aId: x2BtnAId, bId: x2BtnBId, kind: '1x2' });
         }
 
         // ==================== TABLE UPDATES ====================
@@ -1247,9 +1369,25 @@
                             } else {
                                 const detailIndex = rowIndex - 2;
                                 const details = block.details[detailIndex] || ['', '', '', ''];
-                                details.forEach(value => {
+                                details.forEach((value, colIdx) => {
                                     const style = value[1] == 1 ? `background-color: ${CONSTANTS.COLORS.HIGHLIGHT};` : '';
-                                    tr.appendChild(createTableCell(value[0], { style }));
+                                    const td = createTableCell(value[0], { style });
+                                    // Add click behavior on EV cell (first column of each block row)
+                                    if (colIdx === 0 && block.meta && block.meta[detailIndex]) {
+                                        td.style.cursor = 'pointer';
+                                        const meta = block.meta[detailIndex];
+                                        td.addEventListener('click', () => {
+                                            const evVal = normalizeNumber(value[0]);
+                                            const preferA = isFinite(evVal) && evVal > 0;
+                                            const targetId = preferA ? meta.aId : meta.bId;
+                                            const fallbackId = preferA ? meta.bId : meta.aId;
+                                            try {
+                                                window.postMessage({ type: 'ODDS_COLLECTOR_CLICK', targetId, fallbackId, ttl: 3 }, '*');
+                                                window.logToPopup(`Requested click on ${preferA ? 'A' : 'B'} with id ${targetId}`);
+                                            } catch (_) {}
+                                        });
+                                    }
+                                    tr.appendChild(td);
                                 });
                             }
                         });
@@ -2379,25 +2517,205 @@
                 if (window._oddsCollectorChildHandlerAttached) return;
                 window._oddsCollectorChildHandlerAttached = true;
                 const lastResponseAtByRequest = new Map();
+
+                // Ensure a11y focus guard active in this frame
+                setupAriaHiddenFocusGuard();
+
+                const dbg = (msg, extra) => {
+                    try {
+                        console.log('OC DEBUG:', msg, extra || '');
+                    } catch (_) {}
+                };
+
+                async function fillStakeInputForOcId(ocId, amount, attempts = 10, delayMs = 300) {
+                    const setNativeValue = (input, value) => {
+                        try {
+                            const proto = Object.getPrototypeOf(input);
+                            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                            if (desc && typeof desc.set === 'function') {
+                                desc.set.call(input, String(value));
+                            } else {
+                                input.value = String(value);
+                            }
+                        } catch (_) {
+                            try { input.value = String(value); } catch (_) {}
+                        }
+                    };
+                    const REL_XPATH = "./span/div[contains(@class, 'quick-bet')]/div[contains(@class, 'quick-bet')]/div[contains(@class, 'betslip')]/div/div[contains(@class, 'betting-scroller')]/div/div/div[contains(@class, 'betting-stake')]/div[contains(@class, 'betting-stake')]/div/input";
+                    const tryOnce = (attemptIdx) => {
+                        try {
+                            const container = document.querySelector(`[data-oc-id="${ocId}"]`);
+                            dbg('fillStake: attempt, have container?', { attemptIdx, ocId, hasContainer: !!container });
+                            if (!container) return false;
+                            // Strictly search only inside the clicked odd container using provided relative XPath
+                            const input = document.evaluate(REL_XPATH, container, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                            dbg('fillStake: input resolved?', input ? { tag: input.tagName, classes: input.className, readOnly: input.readOnly, disabled: input.disabled, ariaHidden: isHiddenByAria(input) } : { input: null });
+                            if (input) {
+                                // Do not focus to avoid aria-hidden focus errors; set value via native setter and dispatch events
+                                setNativeValue(input, amount);
+                                dbg('fillStake: set value done', { amount });
+                                try { input.dispatchEvent(new Event('keydown', { bubbles: true })); } catch (_) {}
+                                try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
+                                try { input.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+                                try { input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter' })); } catch (_) {}
+                                dbg('fillStake: events dispatched');
+                                return true;
+                            }
+                            return false;
+                        } catch (e) {
+                            dbg('fillStake: exception', { message: e.message, stack: e.stack });
+                            return false;
+                        }
+                    };
+                    for (let i = 0; i < attempts; i++) {
+                        if (tryOnce(i + 1)) return true;
+                        await new Promise(r => setTimeout(r, delayMs));
+                    }
+                    dbg('fillStake: all attempts exhausted', { ocId, attempts, delayMs });
+                    return false;
+                }
+
                 window.addEventListener('message', async (event) => {
                     try {
-                        if (!event.data || event.data.type !== 'ODDS_COLLECTOR_EXTRACT_DATA') return;
-                        const ttl = typeof event.data.ttl === 'number' ? event.data.ttl : 1;
-                        const requestId = typeof event.data.requestId === 'string' ? event.data.requestId : '';
-                        const now = Date.now();
-                        const lastAt = lastResponseAtByRequest.get(requestId) || 0;
-                        if (now - lastAt < 600) return; // throttle per requestId
-                        lastResponseAtByRequest.set(requestId, now);
+                        if (!event.data) return;
+                        if (event.data.type === 'ODDS_COLLECTOR_EXTRACT_DATA') {
+                            const ttl = typeof event.data.ttl === 'number' ? event.data.ttl : 1;
+                            const requestId = typeof event.data.requestId === 'string' ? event.data.requestId : '';
+                            const now = Date.now();
+                            const lastAt = lastResponseAtByRequest.get(requestId) || 0;
+                            if (now - lastAt < 600) return; // throttle per requestId
+                            lastResponseAtByRequest.set(requestId, now);
 
-                        const selfData = extractDataFromDocument(document);
-                        const childrenData = await collectFromDescendants(1500, ttl, requestId);
-                        const payload = [...selfData, ...childrenData];
-                        event.source && event.source.postMessage({ type: 'ODDS_COLLECTOR_DATA', requestId, payload }, '*');
-                    } catch (_) {}
+                            const selfData = extractDataFromDocument(document);
+                            const childrenData = await collectFromDescendants(1500, ttl, requestId);
+                            const payload = [...selfData, ...childrenData];
+                            event.source && event.source.postMessage({ type: 'ODDS_COLLECTOR_DATA', requestId, payload }, '*');
+                            return;
+                        }
+                        if (event.data.type === 'ODDS_COLLECTOR_CLICK') {
+                            const targetId = event.data.targetId;
+                            const fallbackId = event.data.fallbackId;
+                            const ttl = typeof event.data.ttl === 'number' ? event.data.ttl : 0;
+                            dbg('click: received', { targetId, fallbackId, ttl });
+                            const tryClick = (id) => {
+                                if (!id) return false;
+                                const el = document.querySelector(`[data-oc-id="${id}"]`);
+                                dbg('click: found target element?', { id, exists: !!el });
+                                if (el) {
+                                    try {
+                                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                    } catch (_) {}
+                                    const clickable = el.closest ? (el.closest('.odds-button') || el) : el;
+                                    dbg('click: clickable resolved?', { hasClickable: !!clickable, cls: clickable && clickable.className });
+                                    try { clickable.click(); } catch (e) { dbg('click: clickable.click threw', { message: e.message }); return false; }
+                                    // If focused element is in aria-hidden subtree, blur to satisfy a11y
+                                    try {
+                                        if (document.activeElement && isHiddenByAria(document.activeElement)) {
+                                            document.activeElement.blur();
+                                        }
+                                    } catch (_) {}
+                                    // Enforce blurring focus while panel transitions
+                                    startAriaFocusEnforcer(2000, 50);
+                                    return true;
+                                }
+                                return false;
+                            };
+                            let usedId = null;
+                            let clicked = false;
+                            if (tryClick(targetId)) { clicked = true; usedId = targetId; }
+                            else if (tryClick(fallbackId)) { clicked = true; usedId = fallbackId; }
+                            dbg('click: result', { clicked, usedId });
+                            if (!clicked && ttl > 0) {
+                                const iframes = Array.from(document.querySelectorAll('iframe'));
+                                dbg('click: forwarding to children', { children: iframes.length, ttl: ttl - 1 });
+                                iframes.forEach((f) => {
+                                    try { f.contentWindow && f.contentWindow.postMessage({ type: 'ODDS_COLLECTOR_CLICK', targetId, fallbackId, ttl: ttl - 1 }, '*'); } catch (_) {}
+                                });
+                            } else if (clicked && usedId) {
+                                // After a successful click, wait and fill stake input
+                                const amount = 150; // temporary fixed amount per request
+                                dbg('fillStake: start', { usedId, amount });
+                                fillStakeInputForOcId(usedId, amount).then((ok) => {
+                                    try {
+                                        const msg = ok ? `Filled stake=${amount} for ${usedId}` : `Failed to fill stake for ${usedId}`;
+                                        window.logToPopup ? window.logToPopup(msg) : console.log('OC DEBUG:', msg);
+                                    } catch (_) {}
+                                });
+                            }
+                            return;
+                        }
+                    } catch (e) {
+                        try { console.log('OC DEBUG: handler exception', e); } catch (_) {}
+                    }
                 });
             } catch (e) {
                 console.error('Odds Collector: Error setting up child message handler:', e);
             }
+        }
+
+        function setupAriaHiddenFocusGuard() {
+            try {
+                if (window._ocAriaGuardAttached) return;
+                window._ocAriaGuardAttached = true;
+                const observer = new MutationObserver((mutations) => {
+                    try {
+                        const active = document.activeElement;
+                        if (!active) return;
+                        for (const m of mutations) {
+                            if (m.type === 'attributes' && m.attributeName === 'aria-hidden') {
+                                const target = m.target;
+                                if (target && target.getAttribute && target.getAttribute('aria-hidden') === 'true') {
+                                    // Add inert to prevent focus in hidden region
+                                    try { target.setAttribute('inert', ''); } catch (_) {}
+                                    const active = document.activeElement;
+                                    if (active && target.contains(active)) {
+                                        try { active.blur(); } catch (_) {}
+                                    }
+                                } else if (target && target.getAttribute) {
+                                    // Remove inert when aria-hidden is removed or not true
+                                    try { target.removeAttribute('inert'); } catch (_) {}
+                                }
+                            }
+                        }
+                    } catch (_) {}
+                });
+                observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['aria-hidden'] });
+                window._ocAriaGuardObserver = observer;
+
+                // Block focusing into aria-hidden regions
+                const focusBlocker = (e) => {
+                    try {
+                        const t = e.target;
+                        if (isHiddenByAria(t)) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            try { t.blur && t.blur(); } catch (_) {}
+                        }
+                    } catch (_) {}
+                };
+                document.addEventListener('focus', focusBlocker, true);
+                document.addEventListener('mousedown', focusBlocker, true);
+                document.addEventListener('touchstart', focusBlocker, true);
+                window._ocAriaGuardFocusBlocker = focusBlocker;
+            } catch (_) {}
+        }
+
+        function startAriaFocusEnforcer(durationMs = 2000, stepMs = 50) {
+            try {
+                const start = Date.now();
+                const tick = () => {
+                    try {
+                        const ae = document.activeElement;
+                        if (ae && isHiddenByAria(ae)) {
+                            try { ae.blur(); } catch (_) {}
+                        }
+                    } catch (_) {}
+                    if (Date.now() - start < durationMs) {
+                        setTimeout(tick, stepMs);
+                    }
+                };
+                setTimeout(tick, stepMs);
+            } catch (_) {}
         }
 
         console.log('Odds Collector: Script loaded successfully');

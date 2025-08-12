@@ -1934,6 +1934,8 @@
         state.startY = e.clientY
         state.startWidth = popup.offsetWidth
         state.startHeight = popup.offsetHeight
+        // Ngăn chọn text khi resize
+        document.body.style.userSelect = 'none'
         e.preventDefault()
       }
 
@@ -1955,12 +1957,14 @@
         popup.style.width = `${newWidth}px`
         popup.style.height = `${newHeight}px`
 
+        // Cập nhật lại originalWidth/Height mỗi lần resize
         state.originalWidth = newWidth
         state.originalHeight = newHeight
       }
 
       const handleMouseUp = () => {
         state.isResizing = false
+        document.body.style.userSelect = ''
       }
 
       resizeHandle.addEventListener('mousedown', handleMouseDown)
@@ -1985,6 +1989,9 @@
       toggleBtn.addEventListener('click', () => {
         state.isCollapsed = !state.isCollapsed
         if (state.isCollapsed) {
+          // Lưu lại kích thước hiện tại trước khi thu gọn
+          state.originalWidth = popup.offsetWidth
+          state.originalHeight = popup.offsetHeight
           popup.style.height = `${CONSTANTS.POPUP.HEADER_HEIGHT}px`
           popup.style.width = `${CONSTANTS.POPUP.DEFAULT_WIDTH}px`
           contentWrapper.style.display = 'none'
@@ -1992,8 +1999,13 @@
           popup.style.minWidth = `${CONSTANTS.POPUP.DEFAULT_WIDTH}px`
           toggleBtn.textContent = '+'
         } else {
-          popup.style.height = `${state.originalHeight}px`
-          popup.style.width = `${state.originalWidth}px`
+          // Mở lại đúng kích thước trước khi thu gọn
+          popup.style.height = `${
+            state.originalHeight || CONSTANTS.POPUP.MIN_HEIGHT
+          }px`
+          popup.style.width = `${
+            state.originalWidth || CONSTANTS.POPUP.DEFAULT_WIDTH
+          }px`
           popup.style.minHeight = `${CONSTANTS.POPUP.MIN_HEIGHT}px`
           popup.style.minWidth = `${CONSTANTS.POPUP.MIN_WIDTH}px`
           contentWrapper.style.display = 'flex'
@@ -2952,7 +2964,7 @@
           delayMs = 300
         ) {
           const REL_XPATH =
-            "./span/div[contains(@class, 'quick-bet')]/div[contains(@class, 'quick-bet')]/div[contains(@class, 'betslip')]/div/div[contains(@class, 'betting-scroller')]/div/div/div[contains(@class, 'betting-stake')]/div[contains(@class, 'betting-stake')]/div/input"
+            "./span/div[contains(@class, 'quick-bet')]/div[contains(@class, 'quick-bet')]/div[contains(@class, 'betslip')]/div/div[contains(@class, 'betting-scroller')]/div/div/div[contains(@class, 'betting-stake')]/div[contains(@class, 'betting-stake')]/div[contains(@data-focus,'true')]/input"
 
           function isInputVisible(input) {
             if (!input) return false

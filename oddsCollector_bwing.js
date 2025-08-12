@@ -2015,11 +2015,13 @@
           // Lưu lại kích thước hiện tại trước khi thu gọn
           state.originalWidth = popup.offsetWidth
           state.originalHeight = popup.offsetHeight
+          // Đặt minWidth đủ lớn để chứa header và các nút
+          const minHeaderWidth = 370 // Tùy chỉnh nếu cần, đảm bảo đủ cho tất cả nút
           popup.style.height = `${CONSTANTS.POPUP.HEADER_HEIGHT}px`
-          popup.style.width = `${CONSTANTS.POPUP.DEFAULT_WIDTH}px`
-          contentWrapper.style.display = 'none'
+          popup.style.width = `${minHeaderWidth}px`
+          popup.style.minWidth = `${minHeaderWidth}px`
           popup.style.minHeight = `${CONSTANTS.POPUP.HEADER_HEIGHT}px`
-          popup.style.minWidth = `${CONSTANTS.POPUP.DEFAULT_WIDTH}px`
+          contentWrapper.style.display = 'none'
           toggleBtn.textContent = '+'
         } else {
           // Mở lại đúng kích thước trước khi thu gọn
@@ -2340,6 +2342,7 @@
                 height: ${CONSTANTS.POPUP.HEADER_HEIGHT}px;
                 line-height: 24px;
                 color: white;
+                min-width: 370px; /* Đảm bảo header không nhỏ hơn tổng chiều rộng các nút */
             `
 
       return header
@@ -2370,6 +2373,7 @@
                 text-overflow: ellipsis;
                 color: white;
                 flex-shrink: 0;
+                min-width: 90px;
             `
 
       titleContainer.appendChild(title)

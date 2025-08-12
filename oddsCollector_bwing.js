@@ -1928,54 +1928,77 @@
      * @param {HTMLElement} resizeHandle - Resize handle element
      */
     function setupResize(popup, resizeHandle) {
-      const handleMouseDown = (e) => {
-        state.isResizing = true
-        state.startX = e.clientX
-        state.startY = e.clientY
-        state.startWidth = popup.offsetWidth
-        state.startHeight = popup.offsetHeight
-        // Ngăn chọn text khi resize
-        document.body.style.userSelect = 'none'
+      let resizing = false
+      let startX = 0
+      let startY = 0
+      let startWidth = 0
+      let startHeight = 0
+      let contentWrapper = popup.querySelector(
+        'div[style*="flex-direction: column"]'
+      )
+      let wasPaused = false
+
+      const downEvent = window.PointerEvent ? 'pointerdown' : 'mousedown'
+      const moveEvent = window.PointerEvent ? 'pointermove' : 'mousemove'
+      const upEvent = window.PointerEvent ? 'pointerup' : 'mouseup'
+
+      function onPointerDown(e) {
         e.preventDefault()
+        e.stopPropagation()
+        resizing = true
+        startX = e.clientX
+        startY = e.clientY
+        startWidth = popup.offsetWidth
+        startHeight = popup.offsetHeight
+        // Ẩn nội dung bên trong popup (chỉ ẩn content, không ẩn header)
+        if (contentWrapper) contentWrapper.style.visibility = 'hidden'
+        // Tạm dừng refresh nếu chưa dừng
+        wasPaused = state.isPaused
+        state.isPaused = true
+        if (window.oddsCollectorRefreshIndicator) {
+          window.oddsCollectorRefreshIndicator.textContent =
+            'Auto-refresh is paused'
+        }
+        window.addEventListener(moveEvent, onPointerMove, true)
+        window.addEventListener(upEvent, onPointerUp, true)
       }
 
-      const handleMouseMove = (e) => {
-        if (!state.isResizing) return
-
-        const dx = e.clientX - state.startX
-        const dy = e.clientY - state.startY
-
-        const newWidth = Math.max(
-          CONSTANTS.POPUP.MIN_WIDTH,
-          state.startWidth + dx
-        )
-        const newHeight = Math.max(
-          CONSTANTS.POPUP.MIN_HEIGHT,
-          state.startHeight + dy
-        )
-
-        popup.style.width = `${newWidth}px`
-        popup.style.height = `${newHeight}px`
-
-        // Cập nhật lại originalWidth/Height mỗi lần resize
-        state.originalWidth = newWidth
-        state.originalHeight = newHeight
+      function onPointerMove(e) {
+        if (!resizing) return
+        const dx = e.clientX - startX
+        const dy = e.clientY - startY
+        const newWidth = Math.max(CONSTANTS.POPUP.MIN_WIDTH, startWidth + dx)
+        const newHeight = Math.max(CONSTANTS.POPUP.MIN_HEIGHT, startHeight + dy)
+        popup.style.width = newWidth + 'px'
+        popup.style.height = newHeight + 'px'
       }
 
-      const handleMouseUp = () => {
-        state.isResizing = false
-        document.body.style.userSelect = ''
+      function onPointerUp(e) {
+        if (!resizing) return
+        resizing = false
+        window.removeEventListener(moveEvent, onPointerMove, true)
+        window.removeEventListener(upEvent, onPointerUp, true)
+        // Hiện lại nội dung
+        if (contentWrapper) contentWrapper.style.visibility = ''
+        state.originalWidth = popup.offsetWidth
+        state.originalHeight = popup.offsetHeight
+        // Nếu trước đó không pause thì resume lại refresh
+        if (!wasPaused) {
+          state.isPaused = false
+          if (window.oddsCollectorRefreshIndicator) {
+            state.timeLeft = state.currentInterval
+            window.oddsCollectorRefreshIndicator.textContent = `Auto-refresh in: ${state.timeLeft}s`
+          }
+          refreshData()
+        }
       }
 
-      resizeHandle.addEventListener('mousedown', handleMouseDown)
-      document.addEventListener('mousemove', handleMouseMove)
-      document.addEventListener('mouseup', handleMouseUp)
+      resizeHandle.addEventListener(downEvent, onPointerDown, true)
 
-      // Store cleanup function
       popup._resizeCleanup = () => {
-        resizeHandle.removeEventListener('mousedown', handleMouseDown)
-        document.removeEventListener('mousemove', handleMouseMove)
-        document.removeEventListener('mouseup', handleMouseUp)
+        resizeHandle.removeEventListener(downEvent, onPointerDown, true)
+        window.removeEventListener(moveEvent, onPointerMove, true)
+        window.removeEventListener(upEvent, onPointerUp, true)
       }
     }
 

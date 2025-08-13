@@ -3224,11 +3224,13 @@
         async function fillStakeInputForOcId(
           ocId,
           amount,
-          attempts = 10,
+          attempts = 20,
           delayMs = 300
         ) {
-          const REL_XPATH =
-            "./span/div[contains(@class, 'quick-bet')]/div[contains(@class, 'quick-bet')]/div[contains(@class, 'betslip')]/div/div[contains(@class, 'betting-scroller')]/div/div/div[contains(@class, 'betting-stake')]/div[contains(@class, 'betting-stake')]/div[contains(@data-focus,'true')]/input"
+          const XPATHS = [
+            "//div[contains(@class, 'quick-bet')]//div[contains(@class, 'betslip')]//div[contains(@class, 'betting-scroller')]//div[contains(@class, 'betting-stake')]//div[contains(@data-focus,'true')]/input",
+            "//span/div[contains(@class, 'quick-bet')]/div[contains(@class, 'quick-bet')]/div[contains(@class, 'betslip')]/div/div[contains(@class, 'betting-scroller')]/div/div/div[contains(@class, 'betting-stake')]/div[contains(@class, 'betting-stake')]/div[contains(@data-focus,'true')]/input",
+          ]
 
           function isInputVisible(input) {
             if (!input) return false
@@ -3260,6 +3262,22 @@
             }
           }
 
+          function findStakeInputByFullXPath() {
+            for (const xp of XPATHS) {
+              try {
+                const node = document.evaluate(
+                  xp,
+                  document,
+                  null,
+                  XPathResult.FIRST_ORDERED_NODE_TYPE,
+                  null
+                ).singleNodeValue
+                if (node && isInputVisible(node)) return node
+              } catch (_) {}
+            }
+            return null
+          }
+
           async function tryFill(input, value) {
             setNativeValue(input, value)
             input.dispatchEvent(new Event('input', { bubbles: true }))
@@ -3267,10 +3285,8 @@
             input.dispatchEvent(
               new KeyboardEvent('keyup', { bubbles: true, key: 'Enter' })
             )
-            // Kiểm tra lại value
             if (input.value !== String(value)) {
-              await new Promise((r) => setTimeout(r, 300))
-              // Thử lại bằng cách gán trực tiếp
+              await new Promise((r) => setTimeout(r, 120))
               input.value = String(value)
               input.dispatchEvent(new Event('input', { bubbles: true }))
               input.dispatchEvent(new Event('change', { bubbles: true }))
@@ -3279,50 +3295,42 @@
           }
 
           for (let i = 0; i < attempts; i++) {
-            const container = document.querySelector(`[data-oc-id="${ocId}"]`)
-            if (!container) {
-              await new Promise((r) => setTimeout(r, delayMs))
-              continue
-            }
-            const input = document.evaluate(
-              REL_XPATH,
-              container,
-              null,
-              XPathResult.FIRST_ORDERED_NODE_TYPE,
-              null
-            ).singleNodeValue
+            let input = findStakeInputByFullXPath()
             if (!input) {
-              await new Promise((r) => setTimeout(r, delayMs))
+              const speedyDelay = i < 6 ? 80 : i < 12 ? 160 : delayMs
+              await new Promise((r) => setTimeout(r, speedyDelay))
               continue
             }
 
             // Scroll input vào giữa màn hình
-            input.scrollIntoView({ behavior: 'smooth', block: 'center' })
-            await new Promise((r) => setTimeout(r, 200))
+            try {
+              input.scrollIntoView({ behavior: 'instant', block: 'center' })
+            } catch (_) {}
+            await new Promise((r) => setTimeout(r, 50))
 
             // Kiểm tra visible
             if (!isInputVisible(input)) {
-              // Scroll lại lần nữa
-              input.scrollIntoView({ behavior: 'smooth', block: 'center' })
-              await new Promise((r) => setTimeout(r, 200))
-              if (!isInputVisible(input)) {
-                await new Promise((r) => setTimeout(r, delayMs))
-                continue
-              }
-            }
-
-            // Nếu input bị lock, thử lại sau 0.5s
-            if (isInputLocked(input)) {
-              await new Promise((r) => setTimeout(r, 500))
+              await new Promise((r) => setTimeout(r, 100))
               continue
             }
+
+            // Nếu input bị lock, thử lại sau 0.2s
+            if (isInputLocked(input)) {
+              await new Promise((r) => setTimeout(r, 200))
+              continue
+            }
+
+            // Focus trước khi fill để framework bắt sự kiện đúng
+            try {
+              input.focus()
+            } catch (_) {}
 
             // Fill value
             const filled = await tryFill(input, amount)
             if (filled) return true
 
-            // Nếu chưa fill được, thử lại
-            await new Promise((r) => setTimeout(r, delayMs))
+            // Nếu chưa fill được, thử lại nhanh
+            await new Promise((r) => setTimeout(r, 120))
           }
           return false
         }
@@ -3442,6 +3450,20 @@
                     window.logToPopup
                       ? window.logToPopup(msg)
                       : console.log('OC DEBUG:', msg)
+                  } catch (_) {}
+                  // Notify parent/top window for sequencing
+                  try {
+                    if (window.parent) {
+                      window.parent.postMessage(
+                        { type: 'ODDS_COLLECTOR_STAKE_FILLED', usedId, ok },
+                        '*'
+                      )
+                    } else {
+                      window.postMessage(
+                        { type: 'ODDS_COLLECTOR_STAKE_FILLED', usedId, ok },
+                        '*'
+                      )
+                    }
                   } catch (_) {}
                 })
               }
@@ -3652,17 +3674,43 @@
                   } id=${targetId} amount=${amount} (EV=${evText})`
                 )
               } catch (_) {}
-              // small delay between actions; still abortable before next loop
-              for (let t = 0; t < 5; t++) {
-                if (!state.autoPlay) return
-                await new Promise((r) => setTimeout(r, 50))
-              }
+              // Wait for stake fill ack or timeout to avoid racing next bets
+              const ok = await waitForStakeFill(targetId, 3000)
+              if (!state.autoPlay) return
+              // small gap before next item
+              await new Promise((r) => setTimeout(r, 100))
             }
           }
         }
       } catch (e) {
         console.error('Odds Collector: Error in runAutoBetOnData:', e)
       }
+    }
+
+    function waitForStakeFill(usedId, timeoutMs = 6000) {
+      return new Promise((resolve) => {
+        let resolved = false
+        function handler(e) {
+          try {
+            const d = e && e.data
+            if (!d || d.type !== 'ODDS_COLLECTOR_STAKE_FILLED') return
+            if (d.usedId !== usedId) return
+            if (!resolved) {
+              resolved = true
+              window.removeEventListener('message', handler)
+              resolve(!!d.ok)
+            }
+          } catch (_) {}
+        }
+        window.addEventListener('message', handler)
+        setTimeout(() => {
+          if (!resolved) {
+            resolved = true
+            window.removeEventListener('message', handler)
+            resolve(false)
+          }
+        }, timeoutMs)
+      })
     }
 
     console.log('Odds Collector: Script loaded successfully')

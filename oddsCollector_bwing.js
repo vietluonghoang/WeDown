@@ -109,6 +109,17 @@
       } catch (_) {}
     }
 
+    function getStakeForKind(kind) {
+      try {
+        if (kind === 'match') return Number(settings.stakeMatchOdd) || 150
+        if (kind === 'overunder') return Number(settings.stakeOverUnder) || 150
+        if (kind === '1x2') return Number(settings.stake1X2) || 150
+        return 150
+      } catch (_) {
+        return 150
+      }
+    }
+
     // ==================== STATE MANAGEMENT ====================
     const state = {
       timeLeft: CONSTANTS.REFRESH.DEFAULT_INTERVAL,
@@ -133,6 +144,8 @@
       lastMatchCount: 0,
       isUserScrolling: false,
       scrollIdleTimer: null,
+      autoPlay: false,
+      isAutoBetting: false,
     }
 
     // ==================== XPath CONFIGURATION ====================
@@ -1590,8 +1603,13 @@
         "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][2]",
         oddsGroup
       )
+      const x2BtnD = firstNode(
+        "./div[contains(@class, 'bettype-col')][3]/div[contains(@class, 'odds-button')][3]",
+        oddsGroup
+      )
       const x2BtnAId = ensureElementId(x2BtnA)
       const x2BtnBId = ensureElementId(x2BtnB)
+      const x2BtnDId = ensureElementId(x2BtnD)
       const x2EV = formatEV(
         computeEV1X2(
           normalizeNumber(x2OddAtext),
@@ -1606,7 +1624,7 @@
         [x2OddBtext, 0],
         [x2DrawText, 0],
       ])
-      odds1X2.meta.push({ aId: x2BtnAId, bId: x2BtnBId, kind: '1x2' })
+      odds1X2.meta.push({ aId: x2BtnAId, bId: x2BtnBId, dId: x2BtnDId, kind: '1x2' })
     }
 
     // ==================== TABLE UPDATES ====================
@@ -1680,10 +1698,20 @@
                     td.style.cursor = 'pointer'
                     const meta = block.meta[detailIndex]
                     td.addEventListener('click', () => {
-                      const evVal = normalizeNumber(value[0])
-                      const preferA = isFinite(evVal) && evVal > 0
-                      const targetId = preferA ? meta.aId : meta.bId
-                      const fallbackId = preferA ? meta.bId : meta.aId
+                      const evText = value[0]
+                      if (evText === '-') return
+                      const evVal = normalizeNumber(evText)
+                      let targetId = null
+                      let fallbackId = null
+                      if (meta.kind === '1x2' && isFinite(evVal) && evVal === 0) {
+                        targetId = meta.dId || null
+                        fallbackId = meta.aId || meta.bId || null
+                      } else {
+                        const preferA = isFinite(evVal) && evVal > 0
+                        targetId = preferA ? meta.aId : meta.bId
+                        fallbackId = preferA ? meta.bId : meta.aId
+                      }
+                      const amount = getStakeForKind(meta.kind)
                       try {
                         window.postMessage(
                           {
@@ -1691,13 +1719,18 @@
                             targetId,
                             fallbackId,
                             ttl: 3,
+                            amount,
                           },
                           '*'
                         )
                         window.logToPopup(
                           `Requested click on ${
-                            preferA ? 'A' : 'B'
-                          } with id ${targetId}`
+                            meta.kind === '1x2' && isFinite(evVal) && evVal === 0
+                              ? 'Draw'
+                              : isFinite(evVal) && evVal > 0
+                              ? 'A'
+                              : 'B'
+                          } with id ${targetId} (amount=${amount})`
                         )
                       } catch (_) {}
                     })
@@ -1822,6 +1855,13 @@
             extractedData.length
           } matches at ${new Date().toLocaleTimeString()}`
         )
+
+        // Auto-bet flow if enabled
+        if (state.autoPlay && extractedData && extractedData.length > 0) {
+          await withRefreshSuspended(async () => {
+            await runAutoBetOnData(extractedData)
+          })
+        }
 
         console.log('Odds Collector: Refresh complete')
       } catch (error) {
@@ -2025,7 +2065,7 @@
           state.originalWidth = popup.offsetWidth
           state.originalHeight = popup.offsetHeight
           // Đặt minWidth đủ lớn để chứa header và các nút
-          const minHeaderWidth = 370 // Tùy chỉnh nếu cần, đảm bảo đủ cho tất cả nút
+          const minHeaderWidth = 520 // Tùy chỉnh nếu cần, đảm bảo đủ cho tất cả nút
           popup.style.height = `${CONSTANTS.POPUP.HEADER_HEIGHT}px`
           popup.style.width = `${minHeaderWidth}px`
           popup.style.minWidth = `${minHeaderWidth}px`
@@ -2351,7 +2391,7 @@
                 height: ${CONSTANTS.POPUP.HEADER_HEIGHT}px;
                 line-height: 24px;
                 color: white;
-                min-width: 370px; /* Đảm bảo header không nhỏ hơn tổng chiều rộng các nút */
+                min-width: 520px; /* Đảm bảo header không nhỏ hơn tổng chiều rộng các nút */
             `
 
       return header
@@ -2368,7 +2408,6 @@
                 display: flex;
                 align-items: center;
                 min-width: 0;
-                flex: 1;
                 gap: 16px;
             `
 
@@ -2429,8 +2468,9 @@
             `
       refreshButton.title = 'Refresh now'
 
-      refreshContainer.appendChild(refreshIndicator)
+      // Đảo thứ tự: nút refresh trước, rồi đến indicator để khi đặt bên phải (row-reverse) sẽ thành title, indicator, refresh
       refreshContainer.appendChild(refreshButton)
+      refreshContainer.appendChild(refreshIndicator)
 
       return { refreshContainer, refreshIndicator, refreshButton }
     }
@@ -2457,7 +2497,7 @@
       panel.style.cssText = `
                 position: absolute;
                 top: ${CONSTANTS.POPUP.HEADER_HEIGHT + 4}px;
-                right: 8px;
+                left: 8px;
                 background: white;
                 border: 1px solid ${CONSTANTS.COLORS.BORDER};
                 box-shadow: 0 2px 8px rgba(0,0,0,0.15);
@@ -2474,10 +2514,10 @@
       tabBar.style.cssText = 'display: flex; gap: 8px; margin-bottom: 10px;'
       const tabInterval = document.createElement('button')
       tabInterval.textContent = 'Interval'
-      tabInterval.style.cssText = 'flex:1; padding: 4px 0; border:none; border-bottom:2px solid #8B0000; background:none; font-weight:bold; cursor:pointer;'
+      tabInterval.style.cssText = 'flex:1; padding: 4px 0; border:none; border-bottom:2px solid transparent; background:none; font-weight:bold; cursor:pointer;'
       const tabStake = document.createElement('button')
       tabStake.textContent = 'Stake'
-      tabStake.style.cssText = 'flex:1; padding: 4px 0; border:none; border-bottom:2px solid transparent; background:none; font-weight:bold; cursor:pointer;'
+      tabStake.style.cssText = 'flex:1; padding: 4px 0; border:none; border-bottom:2px solid #8B0000; background:none; font-weight:bold; cursor:pointer;'
       tabBar.appendChild(tabInterval)
       tabBar.appendChild(tabStake)
       panel.appendChild(tabBar)
@@ -2485,7 +2525,7 @@
       // Content containers
       const intervalContent = document.createElement('div')
       const stakeContent = document.createElement('div')
-      stakeContent.style.display = 'none'
+      stakeContent.style.display = ''
 
       // Helper to create field
       const field = (labelText, initValue, id) => {
@@ -2550,6 +2590,9 @@
 
       panel.appendChild(intervalContent)
       panel.appendChild(stakeContent)
+
+      // default show stake tab
+      intervalContent.style.display = 'none'
 
       // Tab switching logic
       tabInterval.addEventListener('click', () => {
@@ -2808,7 +2851,36 @@
           createRefreshControls()
         const settingsBtn = createSettingsButton()
         const settingsPanel = createSettingsPanel()
+        const autoPlayBtn = createAutoPlayButton()
         const toggleBtn = createToggleButton()
+
+        // Left controls container
+        const leftControls = document.createElement('div')
+        leftControls.style.cssText = `
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    flex-shrink: 0;
+                `
+        leftControls.appendChild(toggleBtn)
+        leftControls.appendChild(settingsBtn)
+        leftControls.appendChild(autoPlayBtn)
+
+        // Right controls container (hiển thị từ trái -> phải: refresh, indicator, title)
+        const rightControls = document.createElement('div')
+        rightControls.style.cssText = `
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    flex-shrink: 0;
+                    margin-left: auto;
+                `
+        rightControls.appendChild(refreshContainer)
+        rightControls.appendChild(titleContainer)
+
+        // Assemble the popup header: left group on left, right group on right
+        header.appendChild(leftControls)
+        header.appendChild(rightControls)
 
         // Create content
         const { contentWrapper, mainContent, table, logArea } =
@@ -2817,14 +2889,19 @@
         const resizeHandle = createResizeHandle()
 
         // Assemble the popup
-        titleContainer.appendChild(refreshContainer)
-        header.appendChild(titleContainer)
-        header.appendChild(settingsBtn)
-        header.appendChild(toggleBtn)
         popup.appendChild(header)
         popup.appendChild(contentWrapper)
         popup.appendChild(settingsPanel)
         popup.appendChild(resizeHandle)
+
+        // Ensure popup width is enough to show all header controls at creation
+        const MIN_HEADER_WIDTH = 520
+        try {
+          const minWidthPx = Math.max(CONSTANTS.POPUP.MIN_WIDTH, MIN_HEADER_WIDTH)
+          popup.style.minWidth = `${minWidthPx}px`
+          const defaultWidth = Math.max(CONSTANTS.POPUP.DEFAULT_WIDTH, MIN_HEADER_WIDTH)
+          popup.style.width = `${defaultWidth}px`
+        } catch (_) {}
 
         // Store original dimensions
         state.originalWidth = CONSTANTS.POPUP.DEFAULT_WIDTH
@@ -2837,6 +2914,7 @@
         setupRefreshButton(refreshButton)
         setupRefreshIndicator(refreshIndicator, header, refreshButton)
         setupSettingsInteractions(settingsBtn, settingsPanel, refreshIndicator)
+        setupAutoPlayInteractions(autoPlayBtn)
 
         // Add logging function
         window.logToPopup = function (message) {
@@ -3201,6 +3279,8 @@
               const fallbackId = event.data.fallbackId
               const ttl =
                 typeof event.data.ttl === 'number' ? event.data.ttl : 0
+              const amountFromMsg = Number(event.data.amount)
+              const amount = amountFromMsg > 0 ? amountFromMsg : 150
               dbg('click: received', { targetId, fallbackId, ttl })
               const tryClick = (id) => {
                 if (!id) return false
@@ -3263,6 +3343,7 @@
                           targetId,
                           fallbackId,
                           ttl: ttl - 1,
+                          amount,
                         },
                         '*'
                       )
@@ -3270,7 +3351,6 @@
                 })
               } else if (clicked && usedId) {
                 // After a successful click, wait and fill stake input
-                const amount = 150 // temporary fixed amount per request
                 dbg('fillStake: start', { usedId, amount })
                 fillStakeInputForOcId(usedId, amount).then((ok) => {
                   try {
@@ -3383,6 +3463,124 @@
         }
         setTimeout(tick, stepMs)
       } catch (_) {}
+    }
+
+    function createAutoPlayButton() {
+      const btn = document.createElement('button')
+      btn.textContent = '▶'
+      btn.title = 'Start auto-bet'
+      btn.style.cssText = `
+                border: none;
+                background: none;
+                cursor: pointer;
+                font-size: 16px;
+                padding: 0 6px;
+                flex-shrink: 0;
+                margin-left: 4px;
+                color: white;
+            `
+      return btn
+    }
+
+    function setupAutoPlayInteractions(autoBtn) {
+      const updateBtnUi = () => {
+        if (state.autoPlay) {
+          autoBtn.textContent = '⏸'
+          autoBtn.title = 'Pause auto-bet'
+        } else {
+          autoBtn.textContent = '▶'
+          autoBtn.title = 'Start auto-bet'
+        }
+      }
+      updateBtnUi()
+      autoBtn.addEventListener('click', () => {
+        state.autoPlay = !state.autoPlay
+        updateBtnUi()
+        window.logToPopup(
+          state.autoPlay ? 'Auto-bet: PLAY' : 'Auto-bet: PAUSE'
+        )
+      })
+    }
+
+    async function withRefreshSuspended(fn) {
+      const prevPaused = state.isPaused
+      try {
+        state.isPaused = true
+        if (window.oddsCollectorRefreshIndicator) {
+          window.oddsCollectorRefreshIndicator.textContent = 'Auto-refresh is paused'
+        }
+        state.isAutoBetting = true
+        await fn()
+      } finally {
+        state.isAutoBetting = false
+        state.isPaused = prevPaused
+        if (!state.isPaused) {
+          state.timeLeft = state.currentInterval
+          if (window.oddsCollectorRefreshIndicator) {
+            window.oddsCollectorRefreshIndicator.textContent = `Auto-refresh in: ${state.timeLeft}s`
+          }
+        }
+      }
+    }
+
+    async function runAutoBetOnData(extractedData) {
+      try {
+        if (!state.autoPlay) return
+        for (const entity of extractedData) {
+          if (!state.autoPlay) return
+          for (let bIndex = 0; bIndex < entity.blocks.length; bIndex++) {
+            if (!state.autoPlay) return
+            const block = entity.blocks[bIndex]
+            for (let i = 0; i < block.details.length; i++) {
+              if (!state.autoPlay) return
+              const meta = block.meta && block.meta[i]
+              if (!meta) continue
+              const evText = block.details[i] && block.details[i][0] && block.details[i][0][0]
+              if (evText == null || evText === '-') continue
+              const evVal = normalizeNumber(evText)
+              if (!isFinite(evVal)) continue
+              let targetId = null
+              let fallbackId = null
+              if (meta.kind === '1x2' && evVal === 0 && meta.dId) {
+                targetId = meta.dId
+                fallbackId = meta.aId || meta.bId || null
+              } else {
+                const preferA = evVal > 0
+                targetId = preferA ? meta.aId : meta.bId
+                fallbackId = preferA ? meta.bId : meta.aId
+              }
+              if (!targetId) continue
+              if (!state.autoPlay) return
+              const amount = getStakeForKind(meta.kind)
+              try {
+                if (!state.autoPlay) return
+                window.postMessage(
+                  {
+                    type: 'ODDS_COLLECTOR_CLICK',
+                    targetId,
+                    fallbackId,
+                    ttl: 3,
+                    amount,
+                  },
+                  '*'
+                )
+                window.logToPopup(
+                  `AutoBet: ${meta.kind} -> click ${
+                    meta.kind === '1x2' && evVal === 0 ? 'Draw' : evVal > 0 ? 'A' : 'B'
+                  } id=${targetId} amount=${amount} (EV=${evText})`
+                )
+              } catch (_) {}
+              // small delay between actions; still abortable before next loop
+              for (let t = 0; t < 5; t++) {
+                if (!state.autoPlay) return
+                await new Promise((r) => setTimeout(r, 50))
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Odds Collector: Error in runAutoBetOnData:', e)
+      }
     }
 
     console.log('Odds Collector: Script loaded successfully')

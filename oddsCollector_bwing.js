@@ -84,12 +84,21 @@
             Number(parsed.matchesFoundInterval) > 0
               ? Number(parsed.matchesFoundInterval)
               : CONSTANTS.REFRESH.MATCHES_FOUND_INTERVAL,
+          stakeMatchOdd:
+            Number(parsed.stakeMatchOdd) > 0 ? Number(parsed.stakeMatchOdd) : 150,
+          stakeOverUnder:
+            Number(parsed.stakeOverUnder) > 0 ? Number(parsed.stakeOverUnder) : 150,
+          stake1X2:
+            Number(parsed.stake1X2) > 0 ? Number(parsed.stake1X2) : 150,
         }
       } catch (_) {
         return {
           defaultInterval: CONSTANTS.REFRESH.DEFAULT_INTERVAL,
           noMatchesInterval: CONSTANTS.REFRESH.NO_MATCHES_INTERVAL,
           matchesFoundInterval: CONSTANTS.REFRESH.MATCHES_FOUND_INTERVAL,
+          stakeMatchOdd: 150,
+          stakeOverUnder: 150,
+          stake1X2: 150,
         }
       }
     }
@@ -2455,16 +2464,30 @@
                 border-radius: 4px;
                 padding: 10px;
                 z-index: 10000;
-                min-width: 220px;
+                min-width: 260px;
                 display: none;
                 font-size: 12px;
             `
 
-      const title = document.createElement('div')
-      title.textContent = 'Settings'
-      title.style.cssText = 'font-weight: bold; margin-bottom: 8px;'
-      panel.appendChild(title)
+      // Tabs
+      const tabBar = document.createElement('div')
+      tabBar.style.cssText = 'display: flex; gap: 8px; margin-bottom: 10px;'
+      const tabInterval = document.createElement('button')
+      tabInterval.textContent = 'Interval'
+      tabInterval.style.cssText = 'flex:1; padding: 4px 0; border:none; border-bottom:2px solid #8B0000; background:none; font-weight:bold; cursor:pointer;'
+      const tabStake = document.createElement('button')
+      tabStake.textContent = 'Stake'
+      tabStake.style.cssText = 'flex:1; padding: 4px 0; border:none; border-bottom:2px solid transparent; background:none; font-weight:bold; cursor:pointer;'
+      tabBar.appendChild(tabInterval)
+      tabBar.appendChild(tabStake)
+      panel.appendChild(tabBar)
 
+      // Content containers
+      const intervalContent = document.createElement('div')
+      const stakeContent = document.createElement('div')
+      stakeContent.style.display = 'none'
+
+      // Helper to create field
       const field = (labelText, initValue, id) => {
         const row = document.createElement('div')
         row.style.cssText =
@@ -2485,6 +2508,7 @@
         return { row, input }
       }
 
+      // Interval fields
       const noMatch = field(
         'No match interval (s)',
         settings.noMatchesInterval,
@@ -2500,10 +2524,48 @@
         settings.defaultInterval,
         'oc-default'
       )
-      panel.appendChild(noMatch.row)
-      panel.appendChild(hasMatch.row)
-      panel.appendChild(defInt.row)
+      intervalContent.appendChild(noMatch.row)
+      intervalContent.appendChild(hasMatch.row)
+      intervalContent.appendChild(defInt.row)
 
+      // Stake fields
+      const stakeMatchOdd = field(
+        'Stake kèo chấp',
+        settings.stakeMatchOdd,
+        'oc-stake-matchodd'
+      )
+      const stakeOverUnder = field(
+        'Stake tài xỉu',
+        settings.stakeOverUnder,
+        'oc-stake-overunder'
+      )
+      const stake1X2 = field(
+        'Stake 1X2',
+        settings.stake1X2,
+        'oc-stake-1x2'
+      )
+      stakeContent.appendChild(stakeMatchOdd.row)
+      stakeContent.appendChild(stakeOverUnder.row)
+      stakeContent.appendChild(stake1X2.row)
+
+      panel.appendChild(intervalContent)
+      panel.appendChild(stakeContent)
+
+      // Tab switching logic
+      tabInterval.addEventListener('click', () => {
+        tabInterval.style.borderBottom = '2px solid #8B0000'
+        tabStake.style.borderBottom = '2px solid transparent'
+        intervalContent.style.display = ''
+        stakeContent.style.display = 'none'
+      })
+      tabStake.addEventListener('click', () => {
+        tabInterval.style.borderBottom = '2px solid transparent'
+        tabStake.style.borderBottom = '2px solid #8B0000'
+        intervalContent.style.display = 'none'
+        stakeContent.style.display = ''
+      })
+
+      // Actions
       const actions = document.createElement('div')
       actions.style.cssText =
         'margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px;'
@@ -2517,7 +2579,7 @@
       actions.appendChild(save)
       panel.appendChild(actions)
 
-      panel._inputs = { noMatch, hasMatch, defInt }
+      panel._inputs = { noMatch, hasMatch, defInt, stakeMatchOdd, stakeOverUnder, stake1X2 }
       panel._buttons = { cancel, save }
       return panel
     }
@@ -2547,9 +2609,24 @@
           1,
           parseInt(panel._inputs.defInt.input.value || '0', 10)
         )
+        const stakeMatchOdd = Math.max(
+          1,
+          parseInt(panel._inputs.stakeMatchOdd.input.value || '0', 10)
+        )
+        const stakeOverUnder = Math.max(
+          1,
+          parseInt(panel._inputs.stakeOverUnder.input.value || '0', 10)
+        )
+        const stake1X2 = Math.max(
+          1,
+          parseInt(panel._inputs.stake1X2.input.value || '0', 10)
+        )
         settings.noMatchesInterval = n
         settings.matchesFoundInterval = m
         settings.defaultInterval = d
+        settings.stakeMatchOdd = stakeMatchOdd
+        settings.stakeOverUnder = stakeOverUnder
+        settings.stake1X2 = stake1X2
         saveSettings(settings)
         // Apply immediately based on last match count
         updateRefreshInterval(state.lastMatchCount)

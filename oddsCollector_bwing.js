@@ -146,6 +146,7 @@
       scrollIdleTimer: null,
       autoPlay: false,
       isAutoBetting: false,
+      autoScrollLog: true,
     }
 
     // ==================== XPath CONFIGURATION ====================
@@ -2740,10 +2741,44 @@
       const table = createTable()
       mainContent.appendChild(table)
 
+      // Controls bar between table and log (checkbox + gripper for resize)
+      const controlsBar = document.createElement('div')
+      controlsBar.style.cssText = `
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 4px 10px;
+                border-top: 1px solid ${CONSTANTS.COLORS.BORDER};
+                border-bottom: 1px solid ${CONSTANTS.COLORS.BORDER};
+                background: ${CONSTANTS.COLORS.HEADER_BACKGROUND};
+                user-select: none;
+                gap: 8px;
+                flex-wrap: nowrap;
+                min-height: 26px;
+            `
+      const autoScrollWrap = document.createElement('label')
+      autoScrollWrap.style.cssText = 'display:flex; align-items:center; gap:6px; cursor:pointer; white-space: nowrap;'
+      const autoScrollCheckbox = document.createElement('input')
+      autoScrollCheckbox.type = 'checkbox'
+      autoScrollCheckbox.checked = true
+      const autoScrollText = document.createElement('span')
+      autoScrollText.textContent = 'Auto-scroll log'
+      autoScrollText.style.cssText = 'white-space: nowrap;'
+      autoScrollWrap.appendChild(autoScrollCheckbox)
+      autoScrollWrap.appendChild(autoScrollText)
+
+      const gripper = document.createElement('div')
+      gripper.textContent = '⋮⋮'
+      gripper.title = 'Drag to resize log height'
+      gripper.style.cssText = 'cursor: row-resize; padding: 0 6px; color:#666; height: 18px; display:flex; align-items:center;'
+
+      controlsBar.appendChild(autoScrollWrap)
+      controlsBar.appendChild(gripper)
+
       const logArea = document.createElement('textarea')
       logArea.style.cssText = `
                 width: calc(100% - 20px);
-                height: 100px;
+                height: 120px;
                 margin: 10px;
                 padding: 5px;
                 border: 1px solid ${CONSTANTS.COLORS.BORDER};
@@ -2753,7 +2788,52 @@
             `
       logArea.readOnly = true
 
+      // Auto-scroll toggle
+      autoScrollCheckbox.addEventListener('change', () => {
+        state.autoScrollLog = !!autoScrollCheckbox.checked
+      })
+
+      // Drag to resize log height
+      ;(function setupInnerResize() {
+        let resizing = false
+        let startY = 0
+        let startHeight = 0
+        const minLogHeight = 60
+        function onDown(e) {
+          if (e.target === autoScrollCheckbox || e.target === autoScrollText) return
+          e.preventDefault()
+          resizing = true
+          startY = e.clientY
+          startHeight = logArea.offsetHeight
+          window.addEventListener('mousemove', onMove) // bubble phase
+          window.addEventListener('mouseup', onUp)
+        }
+        function onMove(e) {
+          if (!resizing) return
+          const delta = startY - e.clientY // kéo lên tăng, kéo xuống giảm
+          const wrapperRect = contentWrapper.getBoundingClientRect()
+          const maxLogHeight = Math.max(minLogHeight, wrapperRect.height - 120)
+          const newHeight = Math.min(Math.max(minLogHeight, startHeight + delta), maxLogHeight)
+          logArea.style.height = newHeight + 'px'
+        }
+        function onUp() {
+          if (!resizing) return
+          resizing = false
+          window.removeEventListener('mousemove', onMove)
+          window.removeEventListener('mouseup', onUp)
+        }
+        gripper.addEventListener('mousedown', onDown)
+        controlsBar.addEventListener(
+          'mousedown',
+          (e) => {
+            if (e.target === autoScrollCheckbox || e.target === autoScrollText) return
+            onDown(e)
+          }
+        )
+      })()
+
       contentWrapper.appendChild(mainContent)
+      contentWrapper.appendChild(controlsBar)
       contentWrapper.appendChild(logArea)
 
       return { contentWrapper, mainContent, table, logArea }
@@ -2920,7 +3000,9 @@
         window.logToPopup = function (message) {
           const timestamp = new Date().toLocaleTimeString()
           logArea.value += `[${timestamp}] ${message}\n`
-          logArea.scrollTop = logArea.scrollHeight
+          if (state.autoScrollLog) {
+            logArea.scrollTop = logArea.scrollHeight
+          }
         }
 
         // Store references

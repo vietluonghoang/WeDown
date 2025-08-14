@@ -85,11 +85,28 @@
               ? Number(parsed.matchesFoundInterval)
               : CONSTANTS.REFRESH.MATCHES_FOUND_INTERVAL,
           stakeMatchOdd:
-            Number(parsed.stakeMatchOdd) > 0 ? Number(parsed.stakeMatchOdd) : 150,
+            Number(parsed.stakeMatchOdd) > 0
+              ? Number(parsed.stakeMatchOdd)
+              : 150,
           stakeOverUnder:
-            Number(parsed.stakeOverUnder) > 0 ? Number(parsed.stakeOverUnder) : 150,
-          stake1X2:
-            Number(parsed.stake1X2) > 0 ? Number(parsed.stake1X2) : 150,
+            Number(parsed.stakeOverUnder) > 0
+              ? Number(parsed.stakeOverUnder)
+              : 150,
+          stake1X2: Number(parsed.stake1X2) > 0 ? Number(parsed.stake1X2) : 150,
+          deltaOddMatch:
+            Number(parsed.deltaOddMatch) >= 0
+              ? Number(parsed.deltaOddMatch)
+              : 0.05,
+          deltaOddOverUnder:
+            Number(parsed.deltaOddOverUnder) >= 0
+              ? Number(parsed.deltaOddOverUnder)
+              : 0.05,
+          deltaOdd1X2:
+            Number(parsed.deltaOdd1X2) >= 0 ? Number(parsed.deltaOdd1X2) : 0.05,
+          maxBetsPerRound:
+            Number(parsed.maxBetsPerRound) > 0
+              ? Number(parsed.maxBetsPerRound)
+              : 15,
         }
       } catch (_) {
         return {
@@ -99,6 +116,10 @@
           stakeMatchOdd: 150,
           stakeOverUnder: 150,
           stake1X2: 150,
+          deltaOddMatch: 0.05,
+          deltaOddOverUnder: 0.05,
+          deltaOdd1X2: 0.05,
+          maxBetsPerRound: 15,
         }
       }
     }
@@ -117,6 +138,29 @@
         return 150
       } catch (_) {
         return 150
+      }
+    }
+
+    function getDeltaOddForKind(kind) {
+      try {
+        if (kind === 'match') return Number(settings.deltaOddMatch) || 0.05
+        if (kind === 'overunder')
+          return Number(settings.deltaOddOverUnder) || 0.05
+        if (kind === '1x2') return Number(settings.deltaOdd1X2) || 0.05
+        return 0.05
+      } catch (_) {
+        return 0.05
+      }
+    }
+
+    function isOddInDeltaRange(storedOdd, currentOdd, delta) {
+      try {
+        const stored = normalizeNumber(storedOdd)
+        const current = normalizeNumber(currentOdd)
+        if (!isFinite(stored) || !isFinite(current)) return false
+        return Math.abs(stored - current) <= delta
+      } catch (_) {
+        return false
       }
     }
 
@@ -147,6 +191,8 @@
       autoPlay: false,
       isAutoBetting: false,
       autoScrollLog: true,
+      bettedOdds: new Set(), // Track odds that have been bet
+      currentRoundBetCount: 0, // Count bets in current round
     }
 
     // ==================== XPath CONFIGURATION ====================
@@ -1537,7 +1583,13 @@
         [mOddAtext, mHandiAtext === '' ? 0 : 1],
         [mOddBtext, mHandiBtext === '' ? 0 : 1],
       ])
-      matchInfo.meta.push({ aId: mBtnAId, bId: mBtnBId, kind: 'match' })
+      matchInfo.meta.push({
+        aId: mBtnAId,
+        bId: mBtnBId,
+        aOdd: normalizeNumber(mOddAtext),
+        bOdd: normalizeNumber(mOddBtext),
+        kind: 'match',
+      })
 
       const ouHandiAtext = getTextContent(
         XPATH_CONFIG.expressions.overUnder.handicapA,
@@ -1581,7 +1633,13 @@
         [ouOddAtext, 0],
         [ouOddBtext, 0],
       ])
-      overUnder.meta.push({ aId: ouBtnAId, bId: ouBtnBId, kind: 'overunder' })
+      overUnder.meta.push({
+        aId: ouBtnAId,
+        bId: ouBtnBId,
+        aOdd: normalizeNumber(ouOddAtext),
+        bOdd: normalizeNumber(ouOddBtext),
+        kind: 'overunder',
+      })
 
       const x2OddAtext = getTextContent(
         XPATH_CONFIG.expressions.odds1X2.teamAodd,
@@ -1625,7 +1683,15 @@
         [x2OddBtext, 0],
         [x2DrawText, 0],
       ])
-      odds1X2.meta.push({ aId: x2BtnAId, bId: x2BtnBId, dId: x2BtnDId, kind: '1x2' })
+      odds1X2.meta.push({
+        aId: x2BtnAId,
+        bId: x2BtnBId,
+        dId: x2BtnDId,
+        aOdd: normalizeNumber(x2OddAtext),
+        bOdd: normalizeNumber(x2OddBtext),
+        dOdd: normalizeNumber(x2DrawText),
+        kind: '1x2',
+      })
     }
 
     // ==================== TABLE UPDATES ====================
@@ -1704,7 +1770,11 @@
                       const evVal = normalizeNumber(evText)
                       let targetId = null
                       let fallbackId = null
-                      if (meta.kind === '1x2' && isFinite(evVal) && evVal === 0) {
+                      if (
+                        meta.kind === '1x2' &&
+                        isFinite(evVal) &&
+                        evVal === 0
+                      ) {
                         targetId = meta.dId || null
                         fallbackId = meta.aId || meta.bId || null
                       } else {
@@ -1726,7 +1796,9 @@
                         )
                         window.logToPopup(
                           `Requested click on ${
-                            meta.kind === '1x2' && isFinite(evVal) && evVal === 0
+                            meta.kind === '1x2' &&
+                            isFinite(evVal) &&
+                            evVal === 0
                               ? 'Draw'
                               : isFinite(evVal) && evVal > 0
                               ? 'A'
@@ -1856,9 +1928,18 @@
             extractedData.length
           } matches at ${new Date().toLocaleTimeString()}`
         )
+        console.log('Extracted data:', extractedData)
 
         // Auto-bet flow if enabled
+        window.logToPopup(
+          `Auto-bet check: autoPlay=${state.autoPlay}, dataLength=${
+            extractedData ? extractedData.length : 0
+          }`
+        )
         if (state.autoPlay && extractedData && extractedData.length > 0) {
+          window.logToPopup(
+            `Starting auto-bet with ${extractedData.length} matches`
+          )
           await withRefreshSuspended(async () => {
             await runAutoBetOnData(extractedData)
           })
@@ -2515,10 +2596,12 @@
       tabBar.style.cssText = 'display: flex; gap: 8px; margin-bottom: 10px;'
       const tabInterval = document.createElement('button')
       tabInterval.textContent = 'Interval'
-      tabInterval.style.cssText = 'flex:1; padding: 4px 0; border:none; border-bottom:2px solid transparent; background:none; font-weight:bold; cursor:pointer;'
+      tabInterval.style.cssText =
+        'flex:1; padding: 4px 0; border:none; border-bottom:2px solid transparent; background:none; font-weight:bold; cursor:pointer;'
       const tabStake = document.createElement('button')
       tabStake.textContent = 'Stake'
-      tabStake.style.cssText = 'flex:1; padding: 4px 0; border:none; border-bottom:2px solid #8B0000; background:none; font-weight:bold; cursor:pointer;'
+      tabStake.style.cssText =
+        'flex:1; padding: 4px 0; border:none; border-bottom:2px solid #8B0000; background:none; font-weight:bold; cursor:pointer;'
       tabBar.appendChild(tabInterval)
       tabBar.appendChild(tabStake)
       panel.appendChild(tabBar)
@@ -2580,14 +2663,38 @@
         settings.stakeOverUnder,
         'oc-stake-overunder'
       )
-      const stake1X2 = field(
-        'Stake 1X2',
-        settings.stake1X2,
-        'oc-stake-1x2'
-      )
+      const stake1X2 = field('Stake 1X2', settings.stake1X2, 'oc-stake-1x2')
       stakeContent.appendChild(stakeMatchOdd.row)
       stakeContent.appendChild(stakeOverUnder.row)
       stakeContent.appendChild(stake1X2.row)
+
+      // Delta odds fields
+      const deltaOddMatch = field(
+        'Delta odds chấp',
+        settings.deltaOddMatch,
+        'oc-delta-matchodd'
+      )
+      const deltaOddOverUnder = field(
+        'Delta odds tài xỉu',
+        settings.deltaOddOverUnder,
+        'oc-delta-overunder'
+      )
+      const deltaOdd1X2 = field(
+        'Delta odds 1X2',
+        settings.deltaOdd1X2,
+        'oc-delta-1x2'
+      )
+      stakeContent.appendChild(deltaOddMatch.row)
+      stakeContent.appendChild(deltaOddOverUnder.row)
+      stakeContent.appendChild(deltaOdd1X2.row)
+
+      // Max bets per round
+      const maxBetsPerRound = field(
+        'Giới hạn kèo/round',
+        settings.maxBetsPerRound,
+        'oc-max-bets-round'
+      )
+      stakeContent.appendChild(maxBetsPerRound.row)
 
       panel.appendChild(intervalContent)
       panel.appendChild(stakeContent)
@@ -2623,7 +2730,18 @@
       actions.appendChild(save)
       panel.appendChild(actions)
 
-      panel._inputs = { noMatch, hasMatch, defInt, stakeMatchOdd, stakeOverUnder, stake1X2 }
+      panel._inputs = {
+        noMatch,
+        hasMatch,
+        defInt,
+        stakeMatchOdd,
+        stakeOverUnder,
+        stake1X2,
+        deltaOddMatch,
+        deltaOddOverUnder,
+        deltaOdd1X2,
+        maxBetsPerRound,
+      }
       panel._buttons = { cancel, save }
       return panel
     }
@@ -2665,12 +2783,32 @@
           1,
           parseInt(panel._inputs.stake1X2.input.value || '0', 10)
         )
+        const deltaOddMatch = Math.max(
+          0,
+          parseFloat(panel._inputs.deltaOddMatch.input.value || '0.05')
+        )
+        const deltaOddOverUnder = Math.max(
+          0,
+          parseFloat(panel._inputs.deltaOddOverUnder.input.value || '0.05')
+        )
+        const deltaOdd1X2 = Math.max(
+          0,
+          parseFloat(panel._inputs.deltaOdd1X2.input.value || '0.05')
+        )
+        const maxBetsPerRound = Math.max(
+          1,
+          parseInt(panel._inputs.maxBetsPerRound.input.value || '15', 10)
+        )
         settings.noMatchesInterval = n
         settings.matchesFoundInterval = m
         settings.defaultInterval = d
         settings.stakeMatchOdd = stakeMatchOdd
         settings.stakeOverUnder = stakeOverUnder
         settings.stake1X2 = stake1X2
+        settings.deltaOddMatch = deltaOddMatch
+        settings.deltaOddOverUnder = deltaOddOverUnder
+        settings.deltaOdd1X2 = deltaOdd1X2
+        settings.maxBetsPerRound = maxBetsPerRound
         saveSettings(settings)
         // Apply immediately based on last match count
         updateRefreshInterval(state.lastMatchCount)
@@ -2757,7 +2895,8 @@
                 min-height: 26px;
             `
       const autoScrollWrap = document.createElement('label')
-      autoScrollWrap.style.cssText = 'display:flex; align-items:center; gap:6px; cursor:pointer; white-space: nowrap;'
+      autoScrollWrap.style.cssText =
+        'display:flex; align-items:center; gap:6px; cursor:pointer; white-space: nowrap;'
       const autoScrollCheckbox = document.createElement('input')
       autoScrollCheckbox.type = 'checkbox'
       autoScrollCheckbox.checked = true
@@ -2770,7 +2909,8 @@
       const gripper = document.createElement('div')
       gripper.textContent = '⋮⋮'
       gripper.title = 'Drag to resize log height'
-      gripper.style.cssText = 'cursor: row-resize; padding: 0 6px; color:#666; height: 18px; display:flex; align-items:center;'
+      gripper.style.cssText =
+        'cursor: row-resize; padding: 0 6px; color:#666; height: 18px; display:flex; align-items:center;'
 
       controlsBar.appendChild(autoScrollWrap)
       controlsBar.appendChild(gripper)
@@ -2800,7 +2940,8 @@
         let startHeight = 0
         const minLogHeight = 60
         function onDown(e) {
-          if (e.target === autoScrollCheckbox || e.target === autoScrollText) return
+          if (e.target === autoScrollCheckbox || e.target === autoScrollText)
+            return
           e.preventDefault()
           resizing = true
           startY = e.clientY
@@ -2813,7 +2954,10 @@
           const delta = startY - e.clientY // kéo lên tăng, kéo xuống giảm
           const wrapperRect = contentWrapper.getBoundingClientRect()
           const maxLogHeight = Math.max(minLogHeight, wrapperRect.height - 120)
-          const newHeight = Math.min(Math.max(minLogHeight, startHeight + delta), maxLogHeight)
+          const newHeight = Math.min(
+            Math.max(minLogHeight, startHeight + delta),
+            maxLogHeight
+          )
           logArea.style.height = newHeight + 'px'
         }
         function onUp() {
@@ -2823,13 +2967,11 @@
           window.removeEventListener('mouseup', onUp)
         }
         gripper.addEventListener('mousedown', onDown)
-        controlsBar.addEventListener(
-          'mousedown',
-          (e) => {
-            if (e.target === autoScrollCheckbox || e.target === autoScrollText) return
-            onDown(e)
-          }
-        )
+        controlsBar.addEventListener('mousedown', (e) => {
+          if (e.target === autoScrollCheckbox || e.target === autoScrollText)
+            return
+          onDown(e)
+        })
       })()
 
       contentWrapper.appendChild(mainContent)
@@ -2977,9 +3119,15 @@
         // Ensure popup width is enough to show all header controls at creation
         const MIN_HEADER_WIDTH = 520
         try {
-          const minWidthPx = Math.max(CONSTANTS.POPUP.MIN_WIDTH, MIN_HEADER_WIDTH)
+          const minWidthPx = Math.max(
+            CONSTANTS.POPUP.MIN_WIDTH,
+            MIN_HEADER_WIDTH
+          )
           popup.style.minWidth = `${minWidthPx}px`
-          const defaultWidth = Math.max(CONSTANTS.POPUP.DEFAULT_WIDTH, MIN_HEADER_WIDTH)
+          const defaultWidth = Math.max(
+            CONSTANTS.POPUP.DEFAULT_WIDTH,
+            MIN_HEADER_WIDTH
+          )
           popup.style.width = `${defaultWidth}px`
         } catch (_) {}
 
@@ -3210,6 +3358,19 @@
       try {
         if (window._oddsCollectorChildHandlerAttached) return
         window._oddsCollectorChildHandlerAttached = true
+
+        // Định nghĩa logToPopup mặc định nếu chưa có (tránh lỗi trong iframe)
+        if (typeof window.logToPopup !== 'function') {
+          window.logToPopup = function () {
+            // fallback: log ra console
+            if (arguments.length > 0) {
+              try {
+                console.log('[OddsCollector]', ...arguments)
+              } catch (_) {}
+            }
+          }
+        }
+
         const lastResponseAtByRequest = new Map()
 
         // Ensure a11y focus guard active in this frame
@@ -3224,6 +3385,9 @@
         async function fillStakeInputForOcId(
           ocId,
           amount,
+          storedOdd,
+          currentOdd,
+          delta,
           attempts = 20,
           delayMs = 300
         ) {
@@ -3272,9 +3436,15 @@
                   XPathResult.FIRST_ORDERED_NODE_TYPE,
                   null
                 ).singleNodeValue
-                if (node && isInputVisible(node)) return node
-              } catch (_) {}
+                if (node && isInputVisible(node)) {
+                  console.log('Found stake input:', node)
+                  return node
+                }
+              } catch (e) {
+                console.log('XPath error:', e)
+              }
             }
+            console.log('No stake input found')
             return null
           }
 
@@ -3292,6 +3462,38 @@
               input.dispatchEvent(new Event('change', { bubbles: true }))
             }
             return input.value === String(value)
+          }
+
+          // Debug log
+          try {
+            if (window.logToPopup) {
+              window.logToPopup(
+                `Fill stake debug: ocId=${ocId}, amount=${amount}, storedOdd=${storedOdd}, currentOdd=${currentOdd}, delta=${delta}`
+              )
+            }
+          } catch (_) {}
+
+          // Kiểm tra odds trong khoảng delta
+          if (!isOddInDeltaRange(storedOdd, currentOdd, delta)) {
+            try {
+              if (window.logToPopup) {
+                window.logToPopup(
+                  `Skip fill: odds changed (stored: ${storedOdd}, current: ${currentOdd}, delta: ${delta})`
+                )
+              }
+            } catch (_) {}
+            return false
+          }
+
+          // Kiểm tra đã bet kèo này chưa
+          const oddKey = `${ocId}_${storedOdd}`
+          if (state.bettedOdds.has(oddKey)) {
+            try {
+              if (window.logToPopup) {
+                window.logToPopup(`Skip fill: already bet this odd (${oddKey})`)
+              }
+            } catch (_) {}
+            return false
           }
 
           for (let i = 0; i < attempts; i++) {
@@ -3327,11 +3529,26 @@
 
             // Fill value
             const filled = await tryFill(input, amount)
-            if (filled) return true
+            if (filled) {
+              // Đánh dấu đã bet kèo này
+              const oddKey = `${ocId}_${storedOdd}`
+              state.bettedOdds.add(oddKey)
+              try {
+                if (window.logToPopup) {
+                  window.logToPopup(`Fill stake success: ${oddKey}`)
+                }
+              } catch (_) {}
+              return true
+            }
 
             // Nếu chưa fill được, thử lại nhanh
             await new Promise((r) => setTimeout(r, 120))
           }
+          try {
+            if (window.logToPopup) {
+              window.logToPopup(`Fill stake failed after ${attempts} attempts`)
+            }
+          } catch (_) {}
           return false
         }
 
@@ -3371,7 +3588,21 @@
                 typeof event.data.ttl === 'number' ? event.data.ttl : 0
               const amountFromMsg = Number(event.data.amount)
               const amount = amountFromMsg > 0 ? amountFromMsg : 150
-              dbg('click: received', { targetId, fallbackId, ttl })
+              const storedOdd = event.data.storedOdd
+              const currentOdd = event.data.currentOdd
+              const delta = event.data.delta
+              dbg('click: received', {
+                targetId,
+                fallbackId,
+                ttl,
+                amount,
+                storedOdd,
+                currentOdd,
+                delta,
+              })
+              window.logToPopup(
+                `Click handler received: targetId=${targetId}, amount=${amount}, storedOdd=${storedOdd}, currentOdd=${currentOdd}, delta=${delta}`
+              )
               const tryClick = (id) => {
                 if (!id) return false
                 const el = document.querySelector(`[data-oc-id="${id}"]`)
@@ -3434,6 +3665,9 @@
                           fallbackId,
                           ttl: ttl - 1,
                           amount,
+                          storedOdd,
+                          currentOdd,
+                          delta,
                         },
                         '*'
                       )
@@ -3441,8 +3675,30 @@
                 })
               } else if (clicked && usedId) {
                 // After a successful click, wait and fill stake input
-                dbg('fillStake: start', { usedId, amount })
-                fillStakeInputForOcId(usedId, amount).then((ok) => {
+                dbg('fillStake: start', {
+                  usedId,
+                  amount,
+                  storedOdd,
+                  currentOdd,
+                  delta,
+                })
+                window.logToPopup(
+                  `Starting fill stake: usedId=${usedId}, amount=${amount}, storedOdd=${storedOdd}, currentOdd=${currentOdd}, delta=${delta}`
+                )
+                console.log('Starting fill stake:', {
+                  usedId,
+                  amount,
+                  storedOdd,
+                  currentOdd,
+                  delta,
+                })
+                fillStakeInputForOcId(
+                  usedId,
+                  amount,
+                  storedOdd,
+                  currentOdd,
+                  delta
+                ).then((ok) => {
                   try {
                     const msg = ok
                       ? `Filled stake=${amount} for ${usedId}`
@@ -3598,11 +3854,18 @@
       }
       updateBtnUi()
       autoBtn.addEventListener('click', () => {
+        const oldState = state.autoPlay
         state.autoPlay = !state.autoPlay
         updateBtnUi()
         window.logToPopup(
-          state.autoPlay ? 'Auto-bet: PLAY' : 'Auto-bet: PAUSE'
+          `Auto-bet button clicked: ${oldState ? 'PAUSE' : 'PLAY'} -> ${
+            state.autoPlay ? 'PLAY' : 'PAUSE'
+          }`
         )
+        console.log('Auto-bet state changed:', {
+          oldState,
+          newState: state.autoPlay,
+        })
       })
     }
 
@@ -3611,7 +3874,8 @@
       try {
         state.isPaused = true
         if (window.oddsCollectorRefreshIndicator) {
-          window.oddsCollectorRefreshIndicator.textContent = 'Auto-refresh is paused'
+          window.oddsCollectorRefreshIndicator.textContent =
+            'Auto-refresh is paused'
         }
         state.isAutoBetting = true
         await fn()
@@ -3629,7 +3893,15 @@
 
     async function runAutoBetOnData(extractedData) {
       try {
+        window.logToPopup(
+          `runAutoBetOnData called: autoPlay=${state.autoPlay}, dataLength=${extractedData.length}`
+        )
         if (!state.autoPlay) return
+
+        // Reset bet count cho round mới (giữ nguyên danh sách kèo đã bet theo session)
+        state.currentRoundBetCount = 0
+        const maxBets = settings.maxBetsPerRound || 15
+
         for (const entity of extractedData) {
           if (!state.autoPlay) return
           for (let bIndex = 0; bIndex < entity.blocks.length; bIndex++) {
@@ -3637,12 +3909,61 @@
             const block = entity.blocks[bIndex]
             for (let i = 0; i < block.details.length; i++) {
               if (!state.autoPlay) return
+
+              // Kiểm tra giới hạn số kèo
+              if (state.currentRoundBetCount >= maxBets) {
+                window.logToPopup(
+                  `AutoBet: reached max bets limit (${maxBets})`
+                )
+                return
+              }
+
               const meta = block.meta && block.meta[i]
               if (!meta) continue
-              const evText = block.details[i] && block.details[i][0] && block.details[i][0][0]
+              const evText =
+                block.details[i] &&
+                block.details[i][0] &&
+                block.details[i][0][0]
               if (evText == null || evText === '-') continue
               const evVal = normalizeNumber(evText)
               if (!isFinite(evVal)) continue
+
+              // Lấy odds hiện tại từ data
+              let storedOdd = null
+              let currentOdd = null
+              if (meta.kind === 'match') {
+                storedOdd = evVal > 0 ? meta.aOdd : meta.bOdd
+                currentOdd = storedOdd // Tạm thời dùng storedOdd làm currentOdd
+              } else if (meta.kind === 'overunder') {
+                storedOdd = evVal > 0 ? meta.aOdd : meta.bOdd
+                currentOdd = storedOdd
+              } else if (meta.kind === '1x2') {
+                if (evVal === 0) {
+                  storedOdd = meta.dOdd
+                  currentOdd = storedOdd
+                } else {
+                  storedOdd = evVal > 0 ? meta.aOdd : meta.bOdd
+                  currentOdd = storedOdd
+                }
+              }
+
+              // Debug log meta data
+              window.logToPopup(
+                `AutoBet debug: kind=${
+                  meta.kind
+                }, evVal=${evVal}, storedOdd=${storedOdd}, meta=${JSON.stringify(
+                  meta
+                )}`
+              )
+              console.log('Meta data for auto bet:', meta)
+
+              if (!storedOdd) {
+                window.logToPopup(
+                  `AutoBet skip: no storedOdd for kind=${meta.kind}`
+                )
+                continue
+              }
+
               let targetId = null
               let fallbackId = null
               if (meta.kind === '1x2' && evVal === 0 && meta.dId) {
@@ -3656,26 +3977,43 @@
               if (!targetId) continue
               if (!state.autoPlay) return
               const amount = getStakeForKind(meta.kind)
+              const delta = getDeltaOddForKind(meta.kind)
+
               try {
                 if (!state.autoPlay) return
-                window.postMessage(
-                  {
-                    type: 'ODDS_COLLECTOR_CLICK',
-                    targetId,
-                    fallbackId,
-                    ttl: 3,
-                    amount,
-                  },
-                  '*'
+                const clickMessage = {
+                  type: 'ODDS_COLLECTOR_CLICK',
+                  targetId,
+                  fallbackId,
+                  ttl: 3,
+                  amount,
+                  storedOdd,
+                  currentOdd,
+                  delta,
+                }
+                window.logToPopup(
+                  `AutoBet sending click message: ${JSON.stringify(
+                    clickMessage
+                  )}`
                 )
+                window.postMessage(clickMessage, '*')
                 window.logToPopup(
                   `AutoBet: ${meta.kind} -> click ${
-                    meta.kind === '1x2' && evVal === 0 ? 'Draw' : evVal > 0 ? 'A' : 'B'
-                  } id=${targetId} amount=${amount} (EV=${evText})`
+                    meta.kind === '1x2' && evVal === 0
+                      ? 'Draw'
+                      : evVal > 0
+                      ? 'A'
+                      : 'B'
+                  } id=${targetId} amount=${amount} odd=${storedOdd} delta=${delta} (EV=${evText})`
                 )
-              } catch (_) {}
+              } catch (e) {
+                window.logToPopup(`AutoBet click error: ${e.message}`)
+              }
               // Wait for stake fill ack or timeout to avoid racing next bets
               const ok = await waitForStakeFill(targetId, 3000)
+              if (ok) {
+                state.currentRoundBetCount++
+              }
               if (!state.autoPlay) return
               // small gap before next item
               await new Promise((r) => setTimeout(r, 100))
@@ -3714,6 +4052,7 @@
     }
 
     console.log('Odds Collector: Script loaded successfully')
+    console.log('Initial state:', { autoPlay: state.autoPlay, settings })
   } catch (error) {
     console.error('Odds Collector: Fatal error in script:', error)
   }

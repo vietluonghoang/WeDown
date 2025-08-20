@@ -75,12 +75,17 @@
             Number(parsed.dataFoundInterval) > 0
               ? Number(parsed.dataFoundInterval)
               : CONSTANTS.REFRESH.DATA_FOUND_INTERVAL,
+          requestDelay:
+            Number(parsed.requestDelay) >= 0
+              ? Number(parsed.requestDelay)
+              : 3000, // Default 3000ms
         }
       } catch (_) {
         return {
           defaultInterval: CONSTANTS.REFRESH.DEFAULT_INTERVAL,
           noDataInterval: CONSTANTS.REFRESH.NO_DATA_INTERVAL,
           dataFoundInterval: CONSTANTS.REFRESH.DATA_FOUND_INTERVAL,
+          requestDelay: 3000,
         }
       }
     }
@@ -109,7 +114,19 @@
       startHeight: 0,
       originalWidth: CONSTANTS.POPUP.DEFAULT_WIDTH,
       originalHeight: 0,
+      lastRequestStartTime: 0, // Timestamp of the last background request start
       lastDataSignature: '',
+      extraHeaders: [], // Stores the keys of extra columns in order
+    }
+
+    // ==================== UTILITY FUNCTIONS ====================
+    /**
+     * Creates a delay for a specified number of milliseconds.
+     * @param {number} ms - The number of milliseconds to wait.
+     * @returns {Promise<void>}
+     */
+    function delay(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms))
     }
 
     // ==================== CSV PROCESSING ====================
@@ -260,7 +277,7 @@
 
         // ================== USER CONFIGURATION ==================
         // Chỉ định các cột (theo index, bắt đầu từ 0) muốn hiển thị.
-        // Tương ứng với cột 1,2,3,4,5,45,46,47,106 trong file CSV.
+        // Tương ứng với cột 2,3,4,5,6,46,47,48,107 trong file CSV (do index bắt đầu từ 0).
         const columnsToShow = [1, 2, 3, 4, 5, 45, 46, 47, 106]
         // ========================================================
 
@@ -299,6 +316,12 @@
 
         window.logToPopup(`Table updated with ${dataRows.length} rows.`)
         adjustPopupWidth()
+
+        // Bắt đầu xử lý các dòng trong bảng, tạm dừng refresh trong khi thực hiện
+        setTimeout(
+          () => withRefreshSuspended(() => processTableRowsForUrls(tbody)),
+          500
+        )
       } catch (error) {
         console.error('CSV Collector: Error in updateTableWithData:', error)
         window.logToPopup(`Error updating table: ${error.message}`)
@@ -324,7 +347,233 @@
       }
     }
 
+    /**
+     * Tuần tự duyệt qua các dòng của bảng, tìm URL và xử lý chúng trong tab mới.
+     * @param {HTMLElement} tbody - Phần thân của bảng chứa các dòng dữ liệu.
+     */
+    async function processTableRowsForUrls(tbody) {
+      window.logToPopup('Starting to process rows for additional data...')
+      const rows = tbody.querySelectorAll('tr')
+      window.logToPopup(`Found ${rows.length} rows to process.`)
+      for (const row of rows) {
+        // Bỏ qua nếu dòng đã được xử lý hoặc đang được xử lý
+        if (row.dataset.processed) continue
+
+        // Đánh dấu là đang xử lý để tránh lặp lại
+        row.dataset.processed = 'loading'
+
+        const lastCell = row.cells[row.cells.length - 1]
+        if (!lastCell) continue
+
+        const url = lastCell.textContent.trim()
+
+        // Kiểm tra xem nội dung có phải là một URL tuyệt đối hoặc một đường dẫn tương đối (bắt đầu bằng /)
+        if (
+          url.startsWith('http://') ||
+          url.startsWith('https://') ||
+          url.startsWith('/')
+        ) {
+          try {
+            // --- DYNAMIC DELAY LOGIC ---
+            // Chờ cho đến khi đủ thời gian delay cấu hình kể từ lần request cuối cùng.
+            // Logic này thay thế cho việc delay cứng.
+            const requiredDelay = settings.requestDelay || 3000
+            while (Date.now() - state.lastRequestStartTime < requiredDelay) {
+              window.logToPopup(
+                `Waiting for ${
+                  requiredDelay / 1000
+                }s gap before next request...`
+              )
+              await delay(1000) // Chờ 1 giây rồi kiểm tra lại
+            }
+            // Đánh dấu thời điểm bắt đầu request mới
+            state.lastRequestStartTime = Date.now()
+
+            window.logToPopup(`Processing URL: ${url}`)
+            updateTableRowWithExtraData(row, { status: 'loading' })
+
+            // Thay thế việc mở tab mới bằng cách fetch dữ liệu trong nền
+            const extraData = await processUrlInBackground(url)
+            updateTableRowWithExtraData(row, {
+              status: 'success',
+              data: extraData,
+            })
+            window.logToPopup(`Successfully fetched data for ${url}`)
+          } catch (error) {
+            updateTableRowWithExtraData(row, {
+              status: 'error',
+              message: error.message,
+            })
+            window.logToPopup(
+              `Failed to fetch data for ${url}: ${error.message}`
+            )
+          }
+        } else {
+          // Nếu không phải URL, đánh dấu là đã hoàn thành
+          row.dataset.processed = 'done'
+        }
+      }
+      window.logToPopup('Finished processing all rows.')
+    }
+
+    /**
+     * Fetches a URL in the background, parses its HTML, and extracts data.
+     * @param {string} url - The URL to process (can be relative or absolute).
+     * @returns {Promise<object>} - Một promise giải quyết với dữ liệu được trích xuất.
+     */
+    function processUrlInBackground(url) {
+      return new Promise((resolve, reject) => {
+        // Đảm bảo URL là tuyệt đối để GM_xmlhttpRequest hoạt động chính xác
+        const absoluteUrl = new URL(url, window.location.href).href
+
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url: absoluteUrl,
+          onload: function (response) {
+            if (response.status >= 200 && response.status < 300) {
+              try {
+                const parser = new DOMParser()
+                const doc = parser.parseFromString(
+                  response.responseText,
+                  'text/html'
+                )
+                const extraData = extractDataFromChildPage(doc)
+                resolve(extraData)
+              } catch (e) {
+                reject(
+                  new Error(
+                    `Failed to parse HTML for ${absoluteUrl}: ${e.message}`
+                  )
+                )
+              }
+            } else {
+              reject(
+                new Error(
+                  `Failed to fetch ${absoluteUrl}: Status ${response.status}`
+                )
+              )
+            }
+          },
+          onerror: function (error) {
+            reject(
+              new Error(
+                `Network error fetching ${absoluteUrl}: ${error.details}`
+              )
+            )
+          },
+        })
+      })
+    }
+
+    /**
+     * Cập nhật một dòng trong bảng với dữ liệu bổ sung hoặc trạng thái.
+     * @param {HTMLElement} row - Phần tử <tr> cần cập nhật.
+     * @param {object} result - Kết quả xử lý, chứa trạng thái và dữ liệu.
+     */
+    function updateTableRowWithExtraData(row, result) {
+      const table = row.closest('table')
+      if (!table) return
+      const thead = table.querySelector('thead')
+      const headerRow = thead.querySelector('tr')
+
+      // Xóa các ô trạng thái và dữ liệu bổ sung cũ để vẽ lại cho đúng thứ tự
+      row
+        .querySelectorAll('.status-cell, .extra-cell')
+        .forEach((c) => c.remove())
+
+      if (result.status === 'loading') {
+        const cell = createTableCell('Loading...')
+        cell.classList.add('status-cell')
+        row.appendChild(cell)
+      } else if (result.status === 'error') {
+        const cell = createTableCell(`Error: ${result.message}`)
+        cell.style.color = 'red'
+        cell.classList.add('status-cell')
+        row.appendChild(cell)
+        row.dataset.processed = 'error'
+      } else if (result.status === 'success') {
+        const extraData = result.data || {}
+
+        // Cập nhật danh sách header chính
+        Object.keys(extraData).forEach((key) => {
+          if (!state.extraHeaders.includes(key)) {
+            state.extraHeaders.push(key)
+          }
+        })
+
+        // Gán dữ liệu vào hàng để sử dụng ở bước đồng bộ hóa
+        row.extraData = extraData
+        row.dataset.processed = 'done'
+      }
+
+      // --- Đồng bộ hóa toàn bộ bảng (header và các dòng) ---
+      // 1. Vẽ lại toàn bộ header bổ sung từ danh sách chính
+      headerRow.querySelectorAll('.extra-header').forEach((th) => th.remove())
+      state.extraHeaders.forEach((key) => {
+        const th = document.createElement('th')
+        th.textContent = key
+        th.classList.add('extra-header')
+        th.style.cssText = `border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 8px; background-color: ${CONSTANTS.COLORS.HEADER_BACKGROUND}; font-weight: bold; text-align: left; position: sticky; top: 0;`
+        headerRow.appendChild(th)
+      })
+
+      // 2. Đồng bộ hóa tất cả các dòng đã xử lý thành công
+      const allRows = table.querySelectorAll('tbody tr')
+      allRows.forEach((r) => {
+        if (r.dataset.processed === 'done') {
+          const rowData = r.extraData || {}
+          r.querySelectorAll('.extra-cell').forEach((c) => c.remove()) // Xóa ô cũ
+          // Thêm lại các ô mới theo đúng thứ tự header
+          state.extraHeaders.forEach((headerKey) => {
+            const value = rowData[headerKey] ?? ''
+            const cell = createTableCell(value)
+            cell.classList.add('extra-cell')
+            r.appendChild(cell)
+          })
+        }
+      })
+
+      adjustPopupWidth()
+    }
+
     // ==================== REFRESH MANAGEMENT ====================
+
+    /**
+     * Tạm dừng auto-refresh, thực thi một hàm async, sau đó tiếp tục refresh.
+     * Điều này đảm bảo các tác vụ dài hơi như xử lý tab con không bị gián đoạn.
+     * @param {Function} asyncFn - Hàm async để thực thi trong lúc refresh bị tạm dừng.
+     */
+    async function withRefreshSuspended(asyncFn) {
+      const wasAlreadyPaused = state.isPaused
+      if (!wasAlreadyPaused) {
+        state.isPaused = true
+        if (window.csvCollectorRefreshIndicator) {
+          // Cập nhật UI để cho biết một tiến trình đang chạy
+          window.csvCollectorRefreshIndicator.textContent = 'Processing URLs...'
+        }
+        window.logToPopup('Auto-refresh suspended for URL processing.')
+      }
+
+      try {
+        await asyncFn()
+      } catch (error) {
+        console.error(
+          'CSV Collector: Error during suspended refresh task:',
+          error
+        )
+        window.logToPopup(`Error during URL processing: ${error.message}`)
+      } finally {
+        if (!wasAlreadyPaused) {
+          state.isPaused = false
+          // Reset lại đồng hồ đếm ngược để bắt đầu một chu kỳ mới
+          state.timeLeft = state.currentInterval
+          if (window.csvCollectorRefreshIndicator) {
+            window.csvCollectorRefreshIndicator.textContent = `Auto-refresh in: ${state.timeLeft}s`
+          }
+          window.logToPopup('Auto-refresh resumed.')
+        }
+      }
+    }
 
     /**
      * Main refresh function - finds CSV, fetches, parses, and updates the table.
@@ -574,9 +823,15 @@
         settings.defaultInterval,
         'cc-default'
       )
+      const reqDelay = field(
+        'Request delay (ms)',
+        settings.requestDelay,
+        'cc-req-delay'
+      )
       panel.appendChild(noData.row)
       panel.appendChild(hasData.row)
       panel.appendChild(defInt.row)
+      panel.appendChild(reqDelay.row)
 
       const actions = document.createElement('div')
       actions.style.cssText =
@@ -589,7 +844,7 @@
       actions.appendChild(save)
       panel.appendChild(actions)
 
-      panel._inputs = { noData, hasData, defInt }
+      panel._inputs = { noData, hasData, defInt, reqDelay }
       panel._buttons = { cancel, save }
       return panel
     }
@@ -615,6 +870,10 @@
         settings.defaultInterval = Math.max(
           1,
           parseInt(panel._inputs.defInt.input.value || '0', 10)
+        )
+        settings.requestDelay = Math.max(
+          0,
+          parseInt(panel._inputs.reqDelay.input.value || '3000', 10)
         )
         saveSettings(settings)
         refreshData() // Refresh with new settings
@@ -755,5 +1014,23 @@
     })
   } catch (error) {
     console.error('CSV Collector: Fatal error in script:', error)
+  }
+
+  /**
+   * Trích xuất dữ liệu từ một trang (document object).
+   * @param {Document} doc - Document object của trang cần trích xuất dữ liệu.
+   * @returns {object} - Một đối tượng chứa dữ liệu đã trích xuất.
+   */
+  function extractDataFromChildPage(doc) {
+    // ================== USER CONFIGURATION (CHILD PAGE) ==================
+    // TODO: Bổ sung logic của bạn ở đây để tìm và trích xuất dữ liệu từ trang con.
+    // Đây chỉ là một ví dụ placeholder.
+    // Sử dụng `doc` thay vì `document` để tìm kiếm trong HTML đã fetch.
+    const titleElement = doc.querySelector('title')
+    const data = {
+      'Page Title': titleElement ? titleElement.textContent : 'No Title Found',
+    }
+    // =====================================================================
+    return data
   }
 })()

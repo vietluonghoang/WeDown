@@ -1022,15 +1022,98 @@
    * @returns {object} - Một đối tượng chứa dữ liệu đã trích xuất.
    */
   function extractDataFromChildPage(doc) {
-    // ================== USER CONFIGURATION (CHILD PAGE) ==================
-    // TODO: Bổ sung logic của bạn ở đây để tìm và trích xuất dữ liệu từ trang con.
-    // Đây chỉ là một ví dụ placeholder.
-    // Sử dụng `doc` thay vì `document` để tìm kiếm trong HTML đã fetch.
-    const titleElement = doc.querySelector('title')
-    const data = {
-      'Page Title': titleElement ? titleElement.textContent : 'No Title Found',
+    // Helper function to get text content using XPath within the provided document.
+    function getText(xpath, context) {
+      try {
+        // Use the passed 'doc' as the owner document for evaluation.
+        const result = doc.evaluate(
+          xpath,
+          context,
+          null,
+          XPathResult.STRING_TYPE,
+          null
+        )
+        // .stringValue will return the text content of the first matching node.
+        return result.stringValue.trim()
+      } catch (e) {
+        console.error(`CSV Collector: Error evaluating XPath: ${xpath}`, e)
+        return ''
+      }
     }
-    // =====================================================================
-    return data
+
+    // Helper to extract just the number from strings like "10 Wins"
+    const getNumber = (text) => (text.match(/\d+/) || [''])[0]
+
+    // Define the final data structure.
+    const extractedData = {}
+
+    // 1. Find the root element for H2H content.
+    const rootResult = doc.evaluate(
+      "//main[contains(@id, 'h2h_content')]",
+      doc,
+      null,
+      XPathResult.FIRST_ORDERED_NODE_TYPE,
+      null
+    )
+    const rootNode = rootResult.singleNodeValue
+
+    if (!rootNode) {
+      return { 'H2H Status': 'Root container not found' }
+    }
+
+    // 2. Find the H2H section within the root. We'll process the first one found.
+    const h2hResult = doc.evaluate(
+      "./section[contains(@class, 'h2h')]",
+      rootNode,
+      null,
+      XPathResult.FIRST_ORDERED_NODE_TYPE,
+      null
+    )
+    const h2hNode = h2hResult.singleNodeValue
+
+    if (!h2hNode) {
+      return { 'H2H Status': 'H2H section not found' }
+    }
+
+    // 3. Get the content container which holds the stats.
+    const contentNodeResult = doc.evaluate(
+      "./div[contains(@class, 'content')]/div[contains(@class, 'row')]",
+      h2hNode,
+      null,
+      XPathResult.FIRST_ORDERED_NODE_TYPE,
+      null
+    )
+    const contentNode = contentNodeResult.singleNodeValue
+
+    if (!contentNode) {
+      return { 'H2H Status': 'Stats content not found' }
+    }
+
+    // 4. Extract individual stats from the content container.
+    // Note: Corrected user-provided XPaths to be relative and point to the correct teams.
+    const matchesText = getText(
+      "./div[contains(@class, 'teamA')]/p[contains(@class, 'stat')]/span",
+      contentNode
+    )
+    const teamAWinText = getText(
+      "./div[contains(@class, 'teamA')]/div[contains(@class, 'row')]/p[0]",
+      contentNode
+    )
+    const drawText = getText(
+      "./div[contains(@class, 'teamA')]/div[contains(@class, 'row')]/p[1]",
+      contentNode
+    )
+    const teamBWinText = getText(
+      "./div[contains(@class, 'teamB')]/div[contains(@class, 'row')]/p[2]",
+      contentNode
+    )
+
+    // 5. Populate the final data object with extracted numbers.
+    extractedData['H2H Matches'] = getNumber(matchesText)
+    extractedData['TeamA Win'] = getNumber(teamAWinText)
+    extractedData['Draw'] = getNumber(drawText)
+    extractedData['TeamB Win'] = getNumber(teamBWinText)
+
+    return extractedData
   }
 })()

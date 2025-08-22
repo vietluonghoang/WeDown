@@ -392,6 +392,14 @@
         // Đánh dấu là đang xử lý để tránh lặp lại
         row.dataset.processed = 'loading'
 
+        // Lấy tên đội nhà/khách từ các ô của bảng để so sánh
+        const homeTeamNameCsv = row.cells[3]
+          ? row.cells[3].textContent.trim()
+          : null
+        const awayTeamNameCsv = row.cells[4]
+          ? row.cells[4].textContent.trim()
+          : null
+
         const lastCell = row.cells[row.cells.length - 1]
         if (!lastCell) continue
 
@@ -430,7 +438,11 @@
             updateTableRowWithExtraData(row, { status: 'loading' })
 
             // Thay thế việc mở tab mới bằng cách fetch dữ liệu trong nền
-            const extraData = await processUrlInBackground(url)
+            const extraData = await processUrlInBackground(
+              url,
+              homeTeamNameCsv,
+              awayTeamNameCsv
+            )
             updateTableRowWithExtraData(row, {
               status: 'success',
               data: extraData,
@@ -461,7 +473,7 @@
      * @param {string} url - The URL to process (can be relative or absolute).
      * @returns {Promise<object>} - A promise that resolves with the extracted data.
      */
-    function processUrlInBackground(url) {
+    function processUrlInBackground(url, homeTeamNameCsv, awayTeamNameCsv) {
       return new Promise(async (resolve, reject) => {
         const absoluteUrl = new URL(url, window.location.href).href
         const maxRetries = 3
@@ -495,7 +507,11 @@
                   response.responseText,
                   'text/html'
                 )
-                const extraData = extractDataFromChildPage(doc)
+                const extraData = extractDataFromChildPage(
+                  doc,
+                  homeTeamNameCsv,
+                  awayTeamNameCsv
+                )
                 resolve(extraData)
                 return // Exit successfully
               } catch (e) {
@@ -1261,10 +1277,12 @@
    * @param {Document} doc - Document object của trang cần trích xuất dữ liệu.
    * @returns {object} - Một đối tượng chứa dữ liệu đã trích xuất.
    */
-  function extractDataFromChildPage(doc) {
+  function extractDataFromChildPage(doc, homeTeamNameCsv, awayTeamNameCsv) {
     // Log chi tiết khi bắt đầu trích xuất từ trang con
     console.log('CSV Collector: Starting extraction from child page.', {
       url: doc.URL,
+      csvHome: homeTeamNameCsv,
+      csvAway: awayTeamNameCsv,
     })
 
     // Helper function to get text content using XPath within the provided document.
@@ -1324,7 +1342,7 @@
 
     if (!h2hNode) {
       const errorMsg = 'DEBUG: H2H section (`section.h2h`) not found.'
-      console.error(errorMsg, rootNode.innerHTML.substring(0, 500))
+      // console.error(errorMsg, rootNode.innerHTML.substring(0, 500))
       if (window.logToPopup) window.logToPopup(errorMsg)
       // Trả về lỗi để hiển thị trên UI
       return { 'H2H Error': 'H2H section not found' }
@@ -1349,41 +1367,30 @@
       return { 'H2H Error': 'Stats content not found' }
     }
 
-    // NEW: Extract team names from the H2H node with fallback.
-    // We add /text() to get only the direct text content of the node,
-    // avoiding text from child nodes like <span>.
+    // Cải thiện XPath để lấy tên đội, loại bỏ các text thừa như (40%)
+    // Ưu tiên lấy text từ thẻ <a>, nếu không có thì lấy text node đầu tiên của thẻ <p>.
     let teamAName = getText(
-      "./div[contains(@class, 'teamA')]/p/a/text()",
+      "normalize-space(./div[contains(@class, 'teamA')]/p[1]/a)",
       contentNode
     )
     if (!teamAName) {
-      // Fallback to getting text directly from the <p> tag if <a> is not found or has no direct text.
+      // Fallback: lấy text node đầu tiên của <p> nếu không có thẻ <a>
       teamAName = getText(
-        "./div[contains(@class, 'teamA')]/p/text()",
+        "./div[contains(@class, 'teamA')]/p[1]/text()[1]",
         contentNode
       )
-    }
-    if (!teamAName) {
-      const errorMsg = 'LỖI: Không thể lấy tên Đội A. XPath có thể đã hỏng.'
-      console.error(errorMsg, 'Context:', contentNode)
-      if (window.logToPopup) window.logToPopup(errorMsg)
     }
 
     let teamBName = getText(
-      "./div[contains(@class, 'teamB')]/p/a/text()",
+      "normalize-space(./div[contains(@class, 'teamB')]/p[1]/a)",
       contentNode
     )
     if (!teamBName) {
-      // Fallback for Team B
+      // Fallback: lấy text node đầu tiên của <p> nếu không có thẻ <a>
       teamBName = getText(
-        "./div[contains(@class, 'teamB')]/p/text()",
+        "./div[contains(@class, 'teamB')]/p[1]/text()[1]",
         contentNode
       )
-    }
-    if (!teamBName) {
-      const errorMsg = 'LỖI: Không thể lấy tên Đội B. XPath có thể đã hỏng.'
-      console.error(errorMsg, 'Context:', contentNode)
-      if (window.logToPopup) window.logToPopup(errorMsg)
     }
 
     // 4. Extract individual stats from the content container.
@@ -1413,13 +1420,45 @@
       teamBWinText,
     })
 
-    // 5. Populate the final data object with extracted numbers, ensuring the correct order.
+    // 5. So sánh tên đội từ H2H với tên từ CSV và hoán đổi nếu cần
+    const normalize = (str) => (str ? str.toLowerCase().trim() : '')
+    const h2hTeamA_norm = normalize(teamAName)
+    const csvHome_norm = normalize(homeTeamNameCsv)
+
+    // Mặc định là không hoán đổi
+    let isSwapped = false
+    // Chỉ kiểm tra hoán đổi nếu có đủ tên để so sánh
+    if (h2hTeamA_norm && csvHome_norm && h2hTeamA_norm !== csvHome_norm) {
+      const h2hTeamB_norm = normalize(teamBName)
+      const csvAway_norm = normalize(awayTeamNameCsv)
+
+      // Xác nhận rằng đội A (H2H) là đội khách (CSV) và đội B (H2H) là đội nhà (CSV)
+      if (h2hTeamA_norm === csvAway_norm && h2hTeamB_norm === csvHome_norm) {
+        isSwapped = true
+        window.logToPopup(
+          `H2H teams swapped for ${homeTeamNameCsv}. Correcting order.`
+        )
+        console.log(
+          `CSV Collector: H2H teams are swapped. H2H TeamA (${teamAName}) is the Away team.`
+        )
+      } else {
+        window.logToPopup(
+          `Warning: H2H/CSV name mismatch for ${homeTeamNameCsv}.`
+        )
+      }
+    }
+
+    // 6. Điền dữ liệu vào object, hoán đổi giá trị nếu cần để TeamA luôn là đội nhà
     extractedData['H2H Matches'] = getNumber(matchesText)
-    extractedData['TeamA Name'] = teamAName
-    extractedData['TeamA Win'] = getNumber(teamAWinText)
+    extractedData['TeamA Name'] = isSwapped ? teamBName : teamAName
+    extractedData['TeamA Win'] = isSwapped
+      ? getNumber(teamBWinText)
+      : getNumber(teamAWinText)
     extractedData['Draw'] = getNumber(drawText)
-    extractedData['TeamB Win'] = getNumber(teamBWinText)
-    extractedData['TeamB Name'] = teamBName
+    extractedData['TeamB Win'] = isSwapped
+      ? getNumber(teamAWinText)
+      : getNumber(teamBWinText)
+    extractedData['TeamB Name'] = isSwapped ? teamAName : teamBName
 
     // Log đối tượng dữ liệu cuối cùng trước khi trả về
     console.log(
@@ -1429,7 +1468,7 @@
     // Log một bản tóm tắt ngắn gọn lên UI
     if (window.logToPopup)
       window.logToPopup(
-        `Extracted H2H: ${teamAName} ${extractedData['TeamA Win']} - ${extractedData['Draw']} - ${extractedData['TeamB Win']} ${teamBName}`
+        `Extracted H2H: ${extractedData['TeamA Name']} ${extractedData['TeamA Win']} - ${extractedData['Draw']} - ${extractedData['TeamB Win']} ${extractedData['TeamB Name']}`
       )
 
     return extractedData

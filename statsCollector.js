@@ -62,6 +62,16 @@
       try {
         const raw = localStorage.getItem(SETTINGS_STORAGE_KEY)
         const parsed = raw ? JSON.parse(raw) : {}
+
+        let reqDelay = parsed.requestDelay
+        // Heuristic: if value is large, assume it's old data in ms and convert to s.
+        if (reqDelay && Number(reqDelay) >= 1000) {
+          console.log(
+            `CSV Collector: Old requestDelay value (${reqDelay}ms) found. Converting to seconds.`
+          )
+          reqDelay = Number(reqDelay) / 1000
+        }
+
         return {
           defaultInterval:
             Number(parsed.defaultInterval) > 0
@@ -75,17 +85,14 @@
             Number(parsed.dataFoundInterval) > 0
               ? Number(parsed.dataFoundInterval)
               : CONSTANTS.REFRESH.DATA_FOUND_INTERVAL,
-          requestDelay:
-            Number(parsed.requestDelay) >= 0
-              ? Number(parsed.requestDelay)
-              : 3000, // Default 3000ms
+          requestDelay: Number(reqDelay) >= 0 ? Number(reqDelay) : 3, // Default 3s
         }
       } catch (_) {
         return {
           defaultInterval: CONSTANTS.REFRESH.DEFAULT_INTERVAL,
           noDataInterval: CONSTANTS.REFRESH.NO_DATA_INTERVAL,
           dataFoundInterval: CONSTANTS.REFRESH.DATA_FOUND_INTERVAL,
-          requestDelay: 3000,
+          requestDelay: 3,
         }
       }
     }
@@ -116,6 +123,7 @@
       originalHeight: 0,
       lastRequestStartTime: 0, // Timestamp of the last background request start
       lastDataSignature: '',
+      lastRecordCount: 0,
       isProcessingUrls: false, // To specifically track this background task
       cancelProcessing: false, // Flag to signal cancellation
       extraHeaders: [], // Stores the keys of extra columns in order
@@ -391,18 +399,23 @@
         ) {
           try {
             // --- DYNAMIC DELAY LOGIC ---
-            // Chờ cho đến khi đủ thời gian delay cấu hình kể từ lần request cuối cùng.
-            // Logic này thay thế cho việc delay cứng.
-            const requiredDelay = settings.requestDelay || 3000
-            while (Date.now() - state.lastRequestStartTime < requiredDelay) {
-              window.logToPopup(
-                `Waiting for ${
-                  requiredDelay / 1000
-                }s gap before next request...`
-              )
-              await delay(1000) // Chờ 1 giây rồi kiểm tra lại
+            // Wait until the configured delay has passed since the last request.
+            const requiredDelay = (settings.requestDelay || 3) * 1000
+            const timeSinceLastRequest = Date.now() - state.lastRequestStartTime
+
+            if (
+              state.lastRequestStartTime > 0 &&
+              timeSinceLastRequest < requiredDelay
+            ) {
+              const timeToWait = requiredDelay - timeSinceLastRequest
+              if (timeToWait > 0) {
+                window.logToPopup(
+                  `Waiting for ${(timeToWait / 1000).toFixed(1)}s...`
+                )
+                await delay(timeToWait)
+              }
             }
-            // Đánh dấu thời điểm bắt đầu request mới
+            // Mark the start time of the new request
             state.lastRequestStartTime = Date.now()
 
             window.logToPopup(`Processing URL: ${url}`)
@@ -465,11 +478,7 @@
                 )
               }
             } else {
-              reject(
-                new Error(
-                  `Failed to fetch ${absoluteUrl}: Status ${response.status}`
-                )
-              )
+              reject(new Error(`Status ${response.status}`))
             }
           },
           onerror: function (error) {
@@ -631,6 +640,7 @@
         }
 
         const recordCount = csvData.length > 1 ? csvData.length - 1 : 0
+        state.lastRecordCount = recordCount
         updateRefreshInterval(recordCount)
         window.logToPopup(
           `Successfully processed ${recordCount} records at ${new Date().toLocaleTimeString()}`
@@ -834,8 +844,8 @@
         label.setAttribute('for', id)
         const input = document.createElement('input')
         input.type = 'number'
-        input.min = '1'
-        input.step = '1'
+        input.min = id === 'cc-req-delay' ? '0' : '0.5'
+        input.step = 'any'
         input.value = String(initValue)
         input.id = id
         input.style.cssText = 'width: 70px; padding: 2px 4px;'
@@ -860,7 +870,7 @@
         'cc-default'
       )
       const reqDelay = field(
-        'Request delay (ms)',
+        'Request delay (s)',
         settings.requestDelay,
         'cc-req-delay'
       )
@@ -895,24 +905,36 @@
       )
       panel._buttons.cancel.addEventListener('click', close)
       panel._buttons.save.addEventListener('click', () => {
-        settings.noDataInterval = Math.max(
-          1,
-          parseInt(panel._inputs.noData.input.value || '0', 10)
-        )
-        settings.dataFoundInterval = Math.max(
-          1,
-          parseInt(panel._inputs.hasData.input.value || '0', 10)
-        )
-        settings.defaultInterval = Math.max(
-          1,
-          parseInt(panel._inputs.defInt.input.value || '0', 10)
-        )
-        settings.requestDelay = Math.max(
-          0,
-          parseInt(panel._inputs.reqDelay.input.value || '3000', 10)
-        )
+        const newNoData = parseFloat(panel._inputs.noData.input.value)
+        if (!isNaN(newNoData))
+          settings.noDataInterval = Math.max(0.5, newNoData)
+
+        const newHasData = parseFloat(panel._inputs.hasData.input.value)
+        if (!isNaN(newHasData))
+          settings.dataFoundInterval = Math.max(0.5, newHasData)
+
+        const newDefInt = parseFloat(panel._inputs.defInt.input.value)
+        if (!isNaN(newDefInt))
+          settings.defaultInterval = Math.max(0.5, newDefInt)
+
+        const newReqDelay = parseFloat(panel._inputs.reqDelay.input.value)
+        if (!isNaN(newReqDelay))
+          settings.requestDelay = Math.max(0, newReqDelay)
+
         saveSettings(settings)
-        refreshData() // Refresh with new settings
+
+        // Only update intervals if not processing URLs in the background
+        if (!state.isProcessingUrls) {
+          updateRefreshInterval(state.lastRecordCount || 0)
+          // If not paused, reset the countdown timer
+          if (!state.isPaused) {
+            state.timeLeft = state.currentInterval
+            if (window.csvCollectorRefreshIndicator) {
+              window.csvCollectorRefreshIndicator.textContent = `Auto-refresh in: ${state.timeLeft}s`
+            }
+          }
+        }
+        window.logToPopup('Settings saved.')
         close()
       })
     }

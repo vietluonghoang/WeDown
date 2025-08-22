@@ -116,6 +116,8 @@
       originalHeight: 0,
       lastRequestStartTime: 0, // Timestamp of the last background request start
       lastDataSignature: '',
+      isProcessingUrls: false, // To specifically track this background task
+      cancelProcessing: false, // Flag to signal cancellation
       extraHeaders: [], // Stores the keys of extra columns in order
     }
 
@@ -356,6 +358,20 @@
       const rows = tbody.querySelectorAll('tr')
       window.logToPopup(`Found ${rows.length} rows to process.`)
       for (const row of rows) {
+        // Check for cancellation signal at the start of each iteration
+        if (state.cancelProcessing) {
+          window.logToPopup('URL processing was cancelled by the user.')
+          // Reset the 'loading' status for any rows that were in progress
+          tbody
+            .querySelectorAll("tr[data-processed='loading']")
+            .forEach((r) => {
+              r.dataset.processed = '' // Allow reprocessing next time
+              const statusCell = r.querySelector('.status-cell')
+              if (statusCell) statusCell.remove()
+            })
+          break // Exit the loop
+        }
+
         // Bỏ qua nếu dòng đã được xử lý hoặc đang được xử lý
         if (row.dataset.processed) continue
 
@@ -413,7 +429,9 @@
           row.dataset.processed = 'done'
         }
       }
-      window.logToPopup('Finished processing all rows.')
+      if (!state.cancelProcessing) {
+        window.logToPopup('Finished processing all rows.')
+      }
     }
 
     /**
@@ -547,6 +565,8 @@
       const wasAlreadyPaused = state.isPaused
       if (!wasAlreadyPaused) {
         state.isPaused = true
+        state.isProcessingUrls = true // Set processing state
+        state.cancelProcessing = false // Reset cancellation flag
         if (window.csvCollectorRefreshIndicator) {
           // Cập nhật UI để cho biết một tiến trình đang chạy
           window.csvCollectorRefreshIndicator.textContent = 'Processing URLs...'
@@ -565,13 +585,20 @@
       } finally {
         if (!wasAlreadyPaused) {
           state.isPaused = false
+          state.isProcessingUrls = false // Reset processing state
           // Reset lại đồng hồ đếm ngược để bắt đầu một chu kỳ mới
           state.timeLeft = state.currentInterval
           if (window.csvCollectorRefreshIndicator) {
             window.csvCollectorRefreshIndicator.textContent = `Auto-refresh in: ${state.timeLeft}s`
           }
-          window.logToPopup('Auto-refresh resumed.')
+          // Check if it was cancelled to log the correct message
+          if (state.cancelProcessing) {
+            window.logToPopup('Processing cancelled. Auto-refresh resumed.')
+          } else {
+            window.logToPopup('Auto-refresh resumed.')
+          }
         }
+        state.cancelProcessing = false // Always reset at the end
       }
     }
 
@@ -761,6 +788,15 @@
 
     function setupRefreshIndicator(refreshIndicator, header, refreshButton) {
       refreshIndicator.addEventListener('click', () => {
+        // NEW: Handle click during processing to cancel the operation.
+        if (state.isProcessingUrls) {
+          window.logToPopup('User requested to cancel URL processing.')
+          state.cancelProcessing = true
+          // The `finally` block in `withRefreshSuspended` will handle the UI
+          // and state reset once the current async task finishes/aborts.
+          return
+        }
+
         if (state.isPaused) {
           state.isPaused = false
           header.classList.remove('flashing')
@@ -1096,15 +1132,15 @@
       contentNode
     )
     const teamAWinText = getText(
-      "./div[contains(@class, 'teamA')]/div[contains(@class, 'row')]/p[0]",
+      "./div[contains(@class, 'teamA')]/div[contains(@class, 'row')]/p[contains(@class, 'fl') and contains(@class, 'w50')]",
       contentNode
     )
     const drawText = getText(
-      "./div[contains(@class, 'teamA')]/div[contains(@class, 'row')]/p[1]",
+      "./div[contains(@class, 'teamA')]/div[contains(@class, 'row')]/p[contains(@class, 'draw-line') and contains(@class, 'w100')]",
       contentNode
     )
     const teamBWinText = getText(
-      "./div[contains(@class, 'teamB')]/div[contains(@class, 'row')]/p[2]",
+      "./div[contains(@class, 'teamA')]/div[contains(@class, 'row')]/p[contains(@class, 'fr') and contains(@class, 'w50')]",
       contentNode
     )
 

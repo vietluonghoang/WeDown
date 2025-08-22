@@ -40,7 +40,7 @@
         DEFAULT_WIDTH: 450,
         MIN_WIDTH: 300,
         MIN_HEIGHT: 200,
-        HEADER_HEIGHT: 40,
+        HEADER_HEIGHT: 30,
       },
       COLORS: {
         HEADER_GRADIENT_START: '#005f73',
@@ -127,6 +127,8 @@
       isProcessingUrls: false, // To specifically track this background task
       cancelProcessing: false, // Flag to signal cancellation
       extraHeaders: [], // Stores the keys of extra columns in order
+      userHasResized: false,
+      autoScrollLog: true,
     }
 
     // ==================== UTILITY FUNCTIONS ====================
@@ -342,15 +344,22 @@
      * Adjusts popup width based on table content.
      */
     function adjustPopupWidth() {
+      if (state.userHasResized) return
+
       const table = document.querySelector('#csv-collector-popup table')
       if (!table) return
 
       const popup = document.getElementById('csv-collector-popup')
       if (popup) {
-        const requiredWidth = table.scrollWidth + 40 // Add padding
+        const rect = popup.getBoundingClientRect()
+        // Required width is table's scroll width + padding of mainContent (10px each side).
+        const requiredWidth = table.scrollWidth + 20
+        // Max width is viewport width minus current left position.
+        const maxWidth = window.innerWidth - rect.left
+
         const newWidth = Math.min(
           Math.max(requiredWidth, CONSTANTS.POPUP.MIN_WIDTH),
-          window.innerWidth - 40
+          maxWidth
         )
         popup.style.width = `${newWidth}px`
         state.originalWidth = newWidth
@@ -722,8 +731,18 @@
         if (!state.isDragging) return
         const dx = e.clientX - state.startX
         const dy = e.clientY - state.startY
-        popup.style.left = `${state.startLeft + dx}px`
-        popup.style.top = `${state.startTop + dy}px`
+
+        let newLeft = state.startLeft + dx
+        let newTop = state.startTop + dy
+
+        // Đảm bảo popup không bị kéo ra ngoài viewport
+        const maxLeft = window.innerWidth - popup.offsetWidth
+        const maxTop = window.innerHeight - popup.offsetHeight
+        newLeft = Math.max(0, Math.min(newLeft, maxLeft))
+        newTop = Math.max(0, Math.min(newTop, maxTop))
+
+        popup.style.left = `${newLeft}px`
+        popup.style.top = `${newTop}px`
       }
       const handleMouseUp = () => {
         state.isDragging = false
@@ -746,14 +765,22 @@
         if (!state.isResizing) return
         const dx = e.clientX - state.startX
         const dy = e.clientY - state.startY
-        const newWidth = Math.max(
-          CONSTANTS.POPUP.MIN_WIDTH,
-          state.startWidth + dx
+
+        const rect = popup.getBoundingClientRect()
+
+        // Đảm bảo kích thước mới không vượt quá viewport
+        const maxWidth = window.innerWidth - rect.left - 20
+        const maxHeight = window.innerHeight - rect.top - 20
+
+        const newWidth = Math.min(
+          Math.max(CONSTANTS.POPUP.MIN_WIDTH, state.startWidth + dx),
+          maxWidth
         )
-        const newHeight = Math.max(
-          CONSTANTS.POPUP.MIN_HEIGHT,
-          state.startHeight + dy
+        const newHeight = Math.min(
+          Math.max(CONSTANTS.POPUP.MIN_HEIGHT, state.startHeight + dy),
+          maxHeight
         )
+
         popup.style.width = `${newWidth}px`
         popup.style.height = `${newHeight}px`
       }
@@ -762,6 +789,7 @@
         state.isResizing = false
         state.originalWidth = popup.offsetWidth
         state.originalHeight = popup.offsetHeight
+        state.userHasResized = true
       }
       resizeHandle.addEventListener('mousedown', handleMouseDown)
       document.addEventListener('mousemove', handleMouseMove)
@@ -772,14 +800,35 @@
       toggleBtn.addEventListener('click', () => {
         state.isCollapsed = !state.isCollapsed
         if (state.isCollapsed) {
+          // Lưu lại kích thước hiện tại trước khi thu gọn
+          state.originalWidth = popup.offsetWidth
           state.originalHeight = popup.offsetHeight
+
+          // Chiều rộng tối thiểu để hiển thị các nút điều khiển trên header
+          const minHeaderWidth = 350 // px
+
           popup.style.height = `${CONSTANTS.POPUP.HEADER_HEIGHT}px`
+          popup.style.width = `${minHeaderWidth}px`
+          popup.style.minWidth = `${minHeaderWidth}px`
+          popup.style.minHeight = `${CONSTANTS.POPUP.HEADER_HEIGHT}px`
+
           contentWrapper.style.display = 'none'
           toggleBtn.textContent = '+'
+          toggleBtn.title = 'Expand'
         } else {
-          popup.style.height = `${state.originalHeight}px`
+          // Khôi phục lại kích thước ban đầu
+          popup.style.height = `${
+            state.originalHeight || CONSTANTS.POPUP.MIN_HEIGHT
+          }px`
+          popup.style.width = `${
+            state.originalWidth || CONSTANTS.POPUP.DEFAULT_WIDTH
+          }px`
+          popup.style.minHeight = `${CONSTANTS.POPUP.MIN_HEIGHT}px`
+          popup.style.minWidth = `${CONSTANTS.POPUP.MIN_WIDTH}px`
+
           contentWrapper.style.display = 'flex'
           toggleBtn.textContent = '−'
+          toggleBtn.title = 'Collapse'
         }
       })
     }
@@ -965,9 +1014,9 @@
       const popup = document.createElement('div')
       popup.id = 'csv-collector-popup'
       popup.style.cssText = `
-        position: fixed; top: 20px; left: 20px; width: ${CONSTANTS.POPUP.DEFAULT_WIDTH}px;
-        min-width: ${CONSTANTS.POPUP.MIN_WIDTH}px; max-width: calc(100vw - 40px);
-        max-height: calc(100vh - 40px); background: ${CONSTANTS.COLORS.BACKGROUND};
+        position: fixed; top: 70px; left: 20px; width: ${CONSTANTS.POPUP.DEFAULT_WIDTH}px;
+        min-width: ${CONSTANTS.POPUP.MIN_WIDTH}px; max-width: calc(100vw - 20px - 20px);
+        max-height: calc(100vh - 70px - 20px); background: ${CONSTANTS.COLORS.BACKGROUND};
         border: 1px solid ${CONSTANTS.COLORS.BORDER}; border-radius: 4px;
         box-shadow: 0 2px 10px rgba(0,0,0,0.1); z-index: 9999; display: flex;
         flex-direction: column; overflow: hidden;`
@@ -1019,11 +1068,95 @@
       const table = createTable()
       mainContent.appendChild(table)
 
+      // Controls bar between table and log (checkbox + gripper for resize)
+      const controlsBar = document.createElement('div')
+      controlsBar.style.cssText = `
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 4px 10px;
+        border-top: 1px solid ${CONSTANTS.COLORS.BORDER};
+        border-bottom: 1px solid ${CONSTANTS.COLORS.BORDER};
+        background: ${CONSTANTS.COLORS.HEADER_BACKGROUND};
+        user-select: none;
+        gap: 8px;
+        flex-wrap: nowrap;
+        min-height: 26px;
+      `
+      const autoScrollWrap = document.createElement('label')
+      autoScrollWrap.style.cssText =
+        'display:flex; align-items:center; gap:6px; cursor:pointer; white-space: nowrap;'
+      const autoScrollCheckbox = document.createElement('input')
+      autoScrollCheckbox.type = 'checkbox'
+      autoScrollCheckbox.checked = true
+      const autoScrollText = document.createElement('span')
+      autoScrollText.textContent = 'Auto-scroll log'
+      autoScrollText.style.cssText = 'white-space: nowrap;'
+      autoScrollWrap.appendChild(autoScrollCheckbox)
+      autoScrollWrap.appendChild(autoScrollText)
+
+      const gripper = document.createElement('div')
+      gripper.textContent = '⋮⋮'
+      gripper.title = 'Drag to resize log height'
+      gripper.style.cssText =
+        'cursor: row-resize; padding: 0 6px; color:#666; height: 18px; display:flex; align-items:center;'
+
+      controlsBar.appendChild(autoScrollWrap)
+      controlsBar.appendChild(gripper)
+
       const logArea = document.createElement('textarea')
-      logArea.style.cssText = `height: 80px; margin: 0 10px 10px 10px; padding: 5px; border: 1px solid ${CONSTANTS.COLORS.BORDER}; resize: vertical; flex-shrink: 0;`
+      logArea.style.cssText = `height: 80px; margin: 0 10px 10px 10px; padding: 5px; border: 1px solid ${CONSTANTS.COLORS.BORDER}; resize: none; flex-shrink: 0;`
       logArea.readOnly = true
 
+      // Auto-scroll toggle
+      autoScrollCheckbox.addEventListener('change', () => {
+        state.autoScrollLog = !!autoScrollCheckbox.checked
+      })
+
+      // Drag to resize log height
+      ;(function setupInnerResize() {
+        let resizing = false
+        let startY = 0
+        let startHeight = 0
+        const minLogHeight = 40
+        function onDown(e) {
+          if (e.target === autoScrollCheckbox || e.target === autoScrollText)
+            return
+          e.preventDefault()
+          resizing = true
+          startY = e.clientY
+          startHeight = logArea.offsetHeight
+          window.addEventListener('mousemove', onMove)
+          window.addEventListener('mouseup', onUp)
+        }
+        function onMove(e) {
+          if (!resizing) return
+          const delta = startY - e.clientY // Drag up increases height
+          const wrapperRect = contentWrapper.getBoundingClientRect()
+          const maxLogHeight = Math.max(minLogHeight, wrapperRect.height - 100) // Reserve space for table
+          const newHeight = Math.min(
+            Math.max(minLogHeight, startHeight + delta),
+            maxLogHeight
+          )
+          logArea.style.height = newHeight + 'px'
+        }
+        function onUp() {
+          if (!resizing) return
+          resizing = false
+          window.removeEventListener('mousemove', onMove)
+          window.removeEventListener('mouseup', onUp)
+        }
+        // Allow dragging from gripper or the whole bar
+        gripper.addEventListener('mousedown', onDown)
+        controlsBar.addEventListener('mousedown', (e) => {
+          if (e.target === autoScrollCheckbox || e.target === autoScrollText)
+            return
+          onDown(e)
+        })
+      })()
+
       contentWrapper.appendChild(mainContent)
+      contentWrapper.appendChild(controlsBar)
       contentWrapper.appendChild(logArea)
 
       const resizeHandle = document.createElement('div')
@@ -1042,7 +1175,9 @@
       window.logToPopup = (message) => {
         const timestamp = new Date().toLocaleTimeString()
         logArea.value += `[${timestamp}] ${message}\n`
-        logArea.scrollTop = logArea.scrollHeight
+        if (state.autoScrollLog) {
+          logArea.scrollTop = logArea.scrollHeight
+        }
       }
 
       // Setup interactions

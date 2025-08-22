@@ -265,10 +265,11 @@
      * @param {Array<Array<string>>} data - Array of rows, where each row is an array of strings.
      * @param {HTMLElement} tbody - Table body element to update.
      */
-    function updateTableWithData(data, tbody) {
+    function updateTableWithData(data, tbody, force = false) {
       try {
         const signature = JSON.stringify(data)
-        if (signature === state.lastDataSignature) {
+        // If not forced and data is the same, skip the update.
+        if (!force && signature === state.lastDataSignature) {
           window.logToPopup('Data unchanged, skipping table update.')
           return
         }
@@ -328,12 +329,6 @@
 
         window.logToPopup(`Table updated with ${dataRows.length} rows.`)
         adjustPopupWidth()
-
-        // Bắt đầu xử lý các dòng trong bảng, tạm dừng refresh trong khi thực hiện
-        setTimeout(
-          () => withRefreshSuspended(() => processTableRowsForUrls(tbody)),
-          500
-        )
       } catch (error) {
         console.error('CSV Collector: Error in updateTableWithData:', error)
         window.logToPopup(`Error updating table: ${error.message}`)
@@ -371,6 +366,8 @@
      * @param {HTMLElement} tbody - Phần thân của bảng chứa các dòng dữ liệu.
      */
     async function processTableRowsForUrls(tbody) {
+      // Thêm một log để debug dễ hơn, cho biết quá trình bắt đầu
+      console.log('CSV Collector: Starting processTableRowsForUrls...')
       window.logToPopup('Starting to process rows for additional data...')
       const rows = tbody.querySelectorAll('tr')
       window.logToPopup(`Found ${rows.length} rows to process.`)
@@ -427,7 +424,9 @@
             // Mark the start time of the new request
             state.lastRequestStartTime = Date.now()
 
-            window.logToPopup(`Processing URL: ${url}`)
+            window.logToPopup(
+              `[${row.rowIndex}/${rows.length}] Processing URL: ${url}`
+            )
             updateTableRowWithExtraData(row, { status: 'loading' })
 
             // Thay thế việc mở tab mới bằng cách fetch dữ liệu trong nền
@@ -436,15 +435,15 @@
               status: 'success',
               data: extraData,
             })
-            window.logToPopup(`Successfully fetched data for ${url}`)
+            window.logToPopup(
+              `[${row.rowIndex}/${rows.length}] Successfully fetched data for ${url}`
+            )
           } catch (error) {
             updateTableRowWithExtraData(row, {
               status: 'error',
               message: error.message,
             })
-            window.logToPopup(
-              `Failed to fetch data for ${url}: ${error.message}`
-            )
+            console.error(`Failed to fetch data for ${url}: ${error.message}`)
           }
         } else {
           // Nếu không phải URL, đánh dấu là đã hoàn thành
@@ -458,19 +457,38 @@
 
     /**
      * Fetches a URL in the background, parses its HTML, and extracts data.
+     * Implements a retry mechanism for 429 (Too Many Requests) errors.
      * @param {string} url - The URL to process (can be relative or absolute).
-     * @returns {Promise<object>} - Một promise giải quyết với dữ liệu được trích xuất.
+     * @returns {Promise<object>} - A promise that resolves with the extracted data.
      */
     function processUrlInBackground(url) {
-      return new Promise((resolve, reject) => {
-        // Đảm bảo URL là tuyệt đối để GM_xmlhttpRequest hoạt động chính xác
+      return new Promise(async (resolve, reject) => {
         const absoluteUrl = new URL(url, window.location.href).href
+        const maxRetries = 3
+        // The delay for retries will be managed locally and won't affect the global setting.
+        let retryDelay = (settings.requestDelay || 3) * 1000
 
-        GM_xmlhttpRequest({
-          method: 'GET',
-          url: absoluteUrl,
-          onload: function (response) {
+        for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+          try {
+            const response = await new Promise((res, rej) => {
+              GM_xmlhttpRequest({
+                method: 'GET',
+                url: absoluteUrl,
+                onload: function (response) {
+                  res(response)
+                },
+                onerror: function (error) {
+                  rej(
+                    new Error(
+                      `Network error fetching ${absoluteUrl}: ${error.details}`
+                    )
+                  )
+                },
+              })
+            })
+
             if (response.status >= 200 && response.status < 300) {
+              // Success
               try {
                 const parser = new DOMParser()
                 const doc = parser.parseFromString(
@@ -479,25 +497,41 @@
                 )
                 const extraData = extractDataFromChildPage(doc)
                 resolve(extraData)
+                return // Exit successfully
               } catch (e) {
                 reject(
                   new Error(
                     `Failed to parse HTML for ${absoluteUrl}: ${e.message}`
                   )
                 )
+                return // Parsing error, do not retry
               }
-            } else {
-              reject(new Error(`Status ${response.status}`))
-            }
-          },
-          onerror: function (error) {
-            reject(
-              new Error(
-                `Network error fetching ${absoluteUrl}: ${error.details}`
+            } else if (response.status === 429) {
+              // Retryable error
+              if (attempt > maxRetries) {
+                reject(
+                  new Error(`Status 429. Failed after ${maxRetries} retries.`)
+                )
+                return
+              }
+              window.logToPopup(
+                `Status 429. Retrying in ${(retryDelay / 1000).toFixed(
+                  1
+                )}s... (${maxRetries - attempt + 1} retries left)`
               )
-            )
-          },
-        })
+              await delay(retryDelay)
+              retryDelay *= 2 // Double the delay for the next attempt
+            } else {
+              // Any other error status is final
+              reject(new Error(`Status ${response.status}`))
+              return
+            }
+          } catch (error) {
+            // Network error from GM_xmlhttpRequest
+            reject(error)
+            return
+          }
+        }
       })
     }
 
@@ -623,7 +657,7 @@
     /**
      * Main refresh function - finds CSV, fetches, parses, and updates the table.
      */
-    async function refreshData() {
+    async function refreshData(force = false) {
       if (state.isRefreshing) {
         console.log('CSV Collector: Skipping refresh - already in progress.')
         return
@@ -635,6 +669,10 @@
 
         const csvLink = findCsvDownloadLink()
         if (!csvLink) {
+          // Thêm log lỗi vào console để dễ thấy hơn
+          console.error(
+            'CSV Collector: Could not find the CSV download link. Check the XPath selector in findCsvDownloadLink().'
+          )
           window.logToPopup('Error: CSV download link not found on the page.')
           updateRefreshInterval(0)
           updateTableWithData([], window.csvCollectorTbody)
@@ -645,7 +683,16 @@
         const csvData = await fetchAndParseCsv(csvLink)
 
         if (window.csvCollectorTbody) {
-          updateTableWithData(csvData, window.csvCollectorTbody)
+          updateTableWithData(csvData, window.csvCollectorTbody, force)
+          // Bắt đầu xử lý các dòng trong bảng, tạm dừng refresh trong khi thực hiện.
+          // Việc này được gọi ở đây để đảm bảo nó chạy cho cả refresh tự động và thủ công.
+          setTimeout(
+            () =>
+              withRefreshSuspended(() =>
+                processTableRowsForUrls(window.csvCollectorTbody)
+              ),
+            500
+          )
         }
 
         const recordCount = csvData.length > 1 ? csvData.length - 1 : 0
@@ -836,7 +883,7 @@
     function setupRefreshButton(refreshButton) {
       refreshButton.addEventListener('click', () => {
         refreshButton.classList.add('spinning')
-        refreshData()
+        refreshData(true) // Force a full refresh
         setTimeout(
           () => refreshButton.classList.remove('spinning'),
           CONSTANTS.ANIMATIONS.SPIN_DURATION
@@ -1215,6 +1262,11 @@
    * @returns {object} - Một đối tượng chứa dữ liệu đã trích xuất.
    */
   function extractDataFromChildPage(doc) {
+    // Log chi tiết khi bắt đầu trích xuất từ trang con
+    console.log('CSV Collector: Starting extraction from child page.', {
+      url: doc.URL,
+    })
+
     // Helper function to get text content using XPath within the provided document.
     function getText(xpath, context) {
       try {
@@ -1251,7 +1303,13 @@
     const rootNode = rootResult.singleNodeValue
 
     if (!rootNode) {
-      return { 'H2H Status': 'Root container not found' }
+      const errorMsg =
+        'DEBUG: H2H root container (`main#h2h_content`) not found.'
+      // Log một phần HTML của body để dễ debug
+      console.error(errorMsg, doc.body.innerHTML.substring(0, 500))
+      if (window.logToPopup) window.logToPopup(errorMsg)
+      // Trả về lỗi để hiển thị trên UI
+      return { 'H2H Error': 'Root container not found' }
     }
 
     // 2. Find the H2H section within the root. We'll process the first one found.
@@ -1265,7 +1323,11 @@
     const h2hNode = h2hResult.singleNodeValue
 
     if (!h2hNode) {
-      return { 'H2H Status': 'H2H section not found' }
+      const errorMsg = 'DEBUG: H2H section (`section.h2h`) not found.'
+      console.error(errorMsg, rootNode.innerHTML.substring(0, 500))
+      if (window.logToPopup) window.logToPopup(errorMsg)
+      // Trả về lỗi để hiển thị trên UI
+      return { 'H2H Error': 'H2H section not found' }
     }
 
     // 3. Get the content container which holds the stats.
@@ -1279,7 +1341,49 @@
     const contentNode = contentNodeResult.singleNodeValue
 
     if (!contentNode) {
-      return { 'H2H Status': 'Stats content not found' }
+      const errorMsg =
+        'DEBUG: Stats content container (`div.content > div.row`) not found.'
+      console.error(errorMsg, h2hNode.innerHTML.substring(0, 500))
+      if (window.logToPopup) window.logToPopup(errorMsg)
+      // Trả về lỗi để hiển thị trên UI
+      return { 'H2H Error': 'Stats content not found' }
+    }
+
+    // NEW: Extract team names from the H2H node with fallback.
+    // We add /text() to get only the direct text content of the node,
+    // avoiding text from child nodes like <span>.
+    let teamAName = getText(
+      "./div[contains(@class, 'teamA')]/p/a/text()",
+      contentNode
+    )
+    if (!teamAName) {
+      // Fallback to getting text directly from the <p> tag if <a> is not found or has no direct text.
+      teamAName = getText(
+        "./div[contains(@class, 'teamA')]/p/text()",
+        contentNode
+      )
+    }
+    if (!teamAName) {
+      const errorMsg = 'LỖI: Không thể lấy tên Đội A. XPath có thể đã hỏng.'
+      console.error(errorMsg, 'Context:', contentNode)
+      if (window.logToPopup) window.logToPopup(errorMsg)
+    }
+
+    let teamBName = getText(
+      "./div[contains(@class, 'teamB')]/p/a/text()",
+      contentNode
+    )
+    if (!teamBName) {
+      // Fallback for Team B
+      teamBName = getText(
+        "./div[contains(@class, 'teamB')]/p/text()",
+        contentNode
+      )
+    }
+    if (!teamBName) {
+      const errorMsg = 'LỖI: Không thể lấy tên Đội B. XPath có thể đã hỏng.'
+      console.error(errorMsg, 'Context:', contentNode)
+      if (window.logToPopup) window.logToPopup(errorMsg)
     }
 
     // 4. Extract individual stats from the content container.
@@ -1301,11 +1405,32 @@
       contentNode
     )
 
-    // 5. Populate the final data object with extracted numbers.
+    // Log các giá trị text thô vừa lấy được để kiểm tra
+    console.log('DEBUG: Raw extracted text from H2H page:', {
+      matchesText,
+      teamAWinText,
+      drawText,
+      teamBWinText,
+    })
+
+    // 5. Populate the final data object with extracted numbers, ensuring the correct order.
     extractedData['H2H Matches'] = getNumber(matchesText)
+    extractedData['TeamA Name'] = teamAName
     extractedData['TeamA Win'] = getNumber(teamAWinText)
     extractedData['Draw'] = getNumber(drawText)
     extractedData['TeamB Win'] = getNumber(teamBWinText)
+    extractedData['TeamB Name'] = teamBName
+
+    // Log đối tượng dữ liệu cuối cùng trước khi trả về
+    console.log(
+      'CSV Collector: Finished extraction from child page. Result:',
+      JSON.stringify(extractedData, null, 2)
+    )
+    // Log một bản tóm tắt ngắn gọn lên UI
+    if (window.logToPopup)
+      window.logToPopup(
+        `Extracted H2H: ${teamAName} ${extractedData['TeamA Win']} - ${extractedData['Draw']} - ${extractedData['TeamB Win']} ${teamBName}`
+      )
 
     return extractedData
   }

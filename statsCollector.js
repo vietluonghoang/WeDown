@@ -580,15 +580,33 @@
       } else if (result.status === 'success') {
         const extraData = result.data || {}
 
-        // Cập nhật danh sách header chính
-        Object.keys(extraData).forEach((key) => {
+        // Helper để làm phẳng object, tạo key dạng "Parent Key"
+        const flattenObject = (obj, prefix = '') =>
+          Object.keys(obj).reduce((acc, k) => {
+            const pre = prefix.length ? prefix + ' ' : ''
+            if (
+              typeof obj[k] === 'object' &&
+              obj[k] !== null &&
+              !Array.isArray(obj[k])
+            ) {
+              Object.assign(acc, flattenObject(obj[k], pre + k))
+            } else {
+              acc[pre + k] = obj[k]
+            }
+            return acc
+          }, {})
+
+        const flattenedData = flattenObject(extraData)
+
+        // Cập nhật danh sách header chính từ dữ liệu đã được làm phẳng
+        Object.keys(flattenedData).forEach((key) => {
           if (!state.extraHeaders.includes(key)) {
             state.extraHeaders.push(key)
           }
         })
 
-        // Gán dữ liệu vào hàng để sử dụng ở bước đồng bộ hóa
-        row.extraData = extraData
+        // Gán dữ liệu đã được làm phẳng vào hàng
+        row.extraData = flattenedData
         row.dataset.processed = 'done'
       }
 
@@ -1308,7 +1326,42 @@
     const getNumber = (text) => (text.match(/\d+/) || [''])[0]
 
     // Define the final data structure.
-    const extractedData = {}
+    const extractedData = {
+      teamAName: '',
+      teamBName: '',
+      MP: {
+        TeamA: '',
+        TeamB: '',
+      },
+      H2H: {
+        Matches: '',
+        TeamAWin: '',
+        Draw: '',
+        TeamBWin: '',
+      },
+      Neo: {
+        TeamAName: '',
+        TeamARun: {
+          Overall: { Result: '', PPG: '' },
+          Home: { Result: '', PPG: '' },
+          Away: { Result: '', PPG: '' },
+        },
+        TeamATable: {
+          XG: { Overall: '', Home: '', Away: '' },
+          XGA: { Overall: '', Home: '', Away: '' },
+        },
+        TeamBName: '',
+        TeamBRun: {
+          Overall: { Result: '', PPG: '' },
+          Home: { Result: '', PPG: '' },
+          Away: { Result: '', PPG: '' },
+        },
+        TeamBTable: {
+          XG: { Overall: '', Home: '', Away: '' },
+          XGA: { Overall: '', Home: '', Away: '' },
+        },
+      },
+    }
 
     // 1. Find the root element for H2H content.
     const rootResult = doc.evaluate(
@@ -1330,135 +1383,389 @@
       return { 'H2H Error': 'Root container not found' }
     }
 
-    // 2. Find the H2H section within the root. We'll process the first one found.
-    const h2hResult = doc.evaluate(
-      "./section[contains(@class, 'h2h')]",
+    // --- H2H Section Processing ---
+    ;(function processH2H() {
+      const h2hResult = doc.evaluate(
+        "./section[contains(@class, 'h2h')]",
+        rootNode,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null
+      )
+      const h2hNode = h2hResult.singleNodeValue
+
+      if (!h2hNode) {
+        window.logToPopup('H2H section not found. Skipping H2H data.')
+        extractedData.H2H.Error = 'Section not found' // Ghi lỗi vào data
+        return // Thoát khỏi hàm processH2H, nhưng không thoát khỏi hàm cha
+      }
+
+      const contentNodeResult = doc.evaluate(
+        "./div[contains(@class, 'content')]/div[contains(@class, 'row')]",
+        h2hNode,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null
+      )
+      const contentNode = contentNodeResult.singleNodeValue
+
+      if (!contentNode) {
+        window.logToPopup('H2H content not found. Skipping H2H data.')
+        extractedData.H2H.Error = 'Content not found'
+        return
+      }
+
+      let teamAName = getText(
+        "normalize-space(./div[contains(@class, 'teamA')]/p[1]/a)",
+        contentNode
+      )
+      if (!teamAName) {
+        teamAName = getText(
+          "./div[contains(@class, 'teamA')]/p[1]/text()[1]",
+          contentNode
+        )
+      }
+
+      let teamBName = getText(
+        "normalize-space(./div[contains(@class, 'teamB')]/p[1]/a)",
+        contentNode
+      )
+      if (!teamBName) {
+        teamBName = getText(
+          "./div[contains(@class, 'teamB')]/p[1]/text()[1]",
+          contentNode
+        )
+      }
+
+      const matchesText = getText(
+        "./div[contains(@class, 'teamA')]/p[contains(@class, 'stat')]/span",
+        contentNode
+      )
+      const teamAWinText = getText(
+        "./div[contains(@class, 'teamA')]/div[contains(@class, 'row')]/p[contains(@class, 'fl') and contains(@class, 'w50')]",
+        contentNode
+      )
+      const drawText = getText(
+        "./div[contains(@class, 'teamA')]/div[contains(@class, 'row')]/p[contains(@class, 'draw-line') and contains(@class, 'w100')]",
+        contentNode
+      )
+      const teamBWinText = getText(
+        "./div[contains(@class, 'teamA')]/div[contains(@class, 'row')]/p[contains(@class, 'fr') and contains(@class, 'w50')]",
+        contentNode
+      )
+
+      const normalize = (str) => (str ? str.toLowerCase().trim() : '')
+      const h2hTeamA_norm = normalize(teamAName)
+      const csvHome_norm = normalize(homeTeamNameCsv)
+
+      let isSwapped = false
+      if (h2hTeamA_norm && csvHome_norm && h2hTeamA_norm !== csvHome_norm) {
+        const h2hTeamB_norm = normalize(teamBName)
+        const csvAway_norm = normalize(awayTeamNameCsv)
+        if (h2hTeamA_norm === csvAway_norm && h2hTeamB_norm === csvHome_norm) {
+          isSwapped = true
+          window.logToPopup(
+            `H2H teams swapped for ${homeTeamNameCsv}. Correcting order.`
+          )
+        } else {
+          window.logToPopup(
+            `Warning: H2H/CSV name mismatch for ${homeTeamNameCsv}.`
+          )
+        }
+      }
+
+      extractedData.teamAName = isSwapped ? teamBName : teamAName
+      extractedData.teamBName = isSwapped ? teamAName : teamBName
+      extractedData.H2H.Matches = getNumber(matchesText)
+      extractedData.H2H.TeamAWin = isSwapped
+        ? getNumber(teamBWinText)
+        : getNumber(teamAWinText)
+      extractedData.H2H.Draw = getNumber(drawText)
+      extractedData.H2H.TeamBWin = isSwapped
+        ? getNumber(teamAWinText)
+        : getNumber(teamBWinText)
+    })() // Chạy hàm xử lý H2H ngay lập tức
+
+    // 7. Placeholder for MP (Matches Played) section
+    // TODO: Bổ sung XPath để lấy dữ liệu MP (Matches Played) cho mỗi đội.
+    // Ví dụ: const teamAMpNode = doc.evaluate("XPATH_HERE", doc, ...).singleNodeValue;
+    // extractedData.MP.TeamA = getText("./path/to/value", teamAMpNode);
+    // extractedData.MP.TeamB = getText("./path/to/value", teamBMpNode);
+    extractedData.MP.TeamA = '' // Placeholder
+    extractedData.MP.TeamB = '' // Placeholder
+
+    // 8. Placeholder for "Neo" section
+    const neoRootNodeResult = doc.evaluate(
+      "./section[contains(@data-parents, 'stats')]/div[contains(@class, 'stat') and ./div[contains(@class, 'neo-team-overview')]]",
       rootNode,
       null,
       XPathResult.FIRST_ORDERED_NODE_TYPE,
       null
     )
-    const h2hNode = h2hResult.singleNodeValue
+    const neoRootNode = neoRootNodeResult.singleNodeValue
 
-    if (!h2hNode) {
-      const errorMsg = 'DEBUG: H2H section (`section.h2h`) not found.'
-      // console.error(errorMsg, rootNode.innerHTML.substring(0, 500))
-      if (window.logToPopup) window.logToPopup(errorMsg)
-      // Trả về lỗi để hiển thị trên UI
-      return { 'H2H Error': 'H2H section not found' }
-    }
-
-    // 3. Get the content container which holds the stats.
-    const contentNodeResult = doc.evaluate(
-      "./div[contains(@class, 'content')]/div[contains(@class, 'row')]",
-      h2hNode,
-      null,
-      XPathResult.FIRST_ORDERED_NODE_TYPE,
-      null
-    )
-    const contentNode = contentNodeResult.singleNodeValue
-
-    if (!contentNode) {
-      const errorMsg =
-        'DEBUG: Stats content container (`div.content > div.row`) not found.'
-      console.error(errorMsg, h2hNode.innerHTML.substring(0, 500))
-      if (window.logToPopup) window.logToPopup(errorMsg)
-      // Trả về lỗi để hiển thị trên UI
-      return { 'H2H Error': 'Stats content not found' }
-    }
-
-    // Cải thiện XPath để lấy tên đội, loại bỏ các text thừa như (40%)
-    // Ưu tiên lấy text từ thẻ <a>, nếu không có thì lấy text node đầu tiên của thẻ <p>.
-    let teamAName = getText(
-      "normalize-space(./div[contains(@class, 'teamA')]/p[1]/a)",
-      contentNode
-    )
-    if (!teamAName) {
-      // Fallback: lấy text node đầu tiên của <p> nếu không có thẻ <a>
-      teamAName = getText(
-        "./div[contains(@class, 'teamA')]/p[1]/text()[1]",
-        contentNode
+    if (neoRootNode) {
+      window.logToPopup('Neo section found, extracting data...')
+      // Giả sử tên đội trong phần Neo có thể khác, cần lấy lại và so sánh
+      // Lấy tên đội từ phần Neo. Lưu ý: XPath index bắt đầu từ 1.
+      const neoTeamAName = getText(
+        "./div[contains(@class, 'neo-team-overview')][1]/div[contains(@class,'nav-bg')]/div/h3/a",
+        neoRootNode
       )
-    }
-
-    let teamBName = getText(
-      "normalize-space(./div[contains(@class, 'teamB')]/p[1]/a)",
-      contentNode
-    )
-    if (!teamBName) {
-      // Fallback: lấy text node đầu tiên của <p> nếu không có thẻ <a>
-      teamBName = getText(
-        "./div[contains(@class, 'teamB')]/p[1]/text()[1]",
-        contentNode
+      const neoTeamBName = getText(
+        "./div[contains(@class, 'neo-team-overview')][2]/div[contains(@class,'nav-bg')]/div/h3/a",
+        neoRootNode
       )
-    }
+      extractedData.Neo.TeamAName = neoTeamAName
+      extractedData.Neo.TeamBName = neoTeamBName
 
-    // 4. Extract individual stats from the content container.
-    // Note: Corrected user-provided XPaths to be relative and point to the correct teams.
-    const matchesText = getText(
-      "./div[contains(@class, 'teamA')]/p[contains(@class, 'stat')]/span",
-      contentNode
-    )
-    const teamAWinText = getText(
-      "./div[contains(@class, 'teamA')]/div[contains(@class, 'row')]/p[contains(@class, 'fl') and contains(@class, 'w50')]",
-      contentNode
-    )
-    const drawText = getText(
-      "./div[contains(@class, 'teamA')]/div[contains(@class, 'row')]/p[contains(@class, 'draw-line') and contains(@class, 'w100')]",
-      contentNode
-    )
-    const teamBWinText = getText(
-      "./div[contains(@class, 'teamA')]/div[contains(@class, 'row')]/p[contains(@class, 'fr') and contains(@class, 'w50')]",
-      contentNode
-    )
+      // --- Team A Run ---
+      // TODO: Bổ sung XPath để tìm node cha cho phần "Team A Run" bên trong neoRootNode
+      const teamARunNodeResult = doc.evaluate(
+        "./div[contains(@class, 'neo-team-overview')][1]/div[./div/div/ul[contains(@class,'form-run')]]",
+        neoRootNode,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null
+      )
+      const teamARunNode = teamARunNodeResult.singleNodeValue
 
-    // Log các giá trị text thô vừa lấy được để kiểm tra
-    console.log('DEBUG: Raw extracted text from H2H page:', {
-      matchesText,
-      teamAWinText,
-      drawText,
-      teamBWinText,
-    })
-
-    // 5. So sánh tên đội từ H2H với tên từ CSV và hoán đổi nếu cần
-    const normalize = (str) => (str ? str.toLowerCase().trim() : '')
-    const h2hTeamA_norm = normalize(teamAName)
-    const csvHome_norm = normalize(homeTeamNameCsv)
-
-    // Mặc định là không hoán đổi
-    let isSwapped = false
-    // Chỉ kiểm tra hoán đổi nếu có đủ tên để so sánh
-    if (h2hTeamA_norm && csvHome_norm && h2hTeamA_norm !== csvHome_norm) {
-      const h2hTeamB_norm = normalize(teamBName)
-      const csvAway_norm = normalize(awayTeamNameCsv)
-
-      // Xác nhận rằng đội A (H2H) là đội khách (CSV) và đội B (H2H) là đội nhà (CSV)
-      if (h2hTeamA_norm === csvAway_norm && h2hTeamB_norm === csvHome_norm) {
-        isSwapped = true
-        window.logToPopup(
-          `H2H teams swapped for ${homeTeamNameCsv}. Correcting order.`
+      if (teamARunNode) {
+        // Trích xuất Overall Result: lấy text từ tất cả các thẻ <li> và nối lại.
+        const overallResultNodes = doc.evaluate(
+          "./div[2]/div/ul[contains(@class,'form-run')]/li",
+          teamARunNode,
+          null,
+          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+          null
         )
-        console.log(
-          `CSV Collector: H2H teams are swapped. H2H TeamA (${teamAName}) is the Away team.`
+        const resultTexts = []
+        for (let i = 0; i < overallResultNodes.snapshotLength; i++) {
+          resultTexts.push(
+            overallResultNodes.snapshotItem(i).textContent.trim()
+          )
+        }
+        extractedData.Neo.TeamARun.Overall.Result = resultTexts.join('')
+
+        // Trích xuất Overall PPG
+        extractedData.Neo.TeamARun.Overall.PPG = getText(
+          "./div[2]/div/div[contains(@class, 'form-box')]",
+          teamARunNode
+        )
+
+        // Trích xuất Home Result và PPG
+        const homeResultNodes = doc.evaluate(
+          "./div[3]/div/ul[contains(@class,'form-run')]/li",
+          teamARunNode,
+          null,
+          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+          null
+        )
+        const homeResultTexts = []
+        for (let i = 0; i < homeResultNodes.snapshotLength; i++) {
+          homeResultTexts.push(
+            homeResultNodes.snapshotItem(i).textContent.trim()
+          )
+        }
+        extractedData.Neo.TeamARun.Home.Result = homeResultTexts.join('')
+        extractedData.Neo.TeamARun.Home.PPG = getText(
+          "./div[3]/div/div[contains(@class, 'form-box')]",
+          teamARunNode
+        )
+
+        // Trích xuất Away Result và PPG
+        const awayResultNodes = doc.evaluate(
+          "./div[4]/div/ul[contains(@class,'form-run')]/li",
+          teamARunNode,
+          null,
+          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+          null
+        )
+        const awayResultTexts = []
+        for (let i = 0; i < awayResultNodes.snapshotLength; i++) {
+          awayResultTexts.push(
+            awayResultNodes.snapshotItem(i).textContent.trim()
+          )
+        }
+        extractedData.Neo.TeamARun.Away.Result = awayResultTexts.join('')
+        extractedData.Neo.TeamARun.Away.PPG = getText(
+          "./div[4]/div/div[contains(@class, 'form-box')]",
+          teamARunNode
         )
       } else {
-        window.logToPopup(
-          `Warning: H2H/CSV name mismatch for ${homeTeamNameCsv}.`
-        )
+        console.log("CSV Collector: 'Team A Run' node not found. Skipping.")
       }
-    }
 
-    // 6. Điền dữ liệu vào object, hoán đổi giá trị nếu cần để TeamA luôn là đội nhà
-    extractedData['H2H Matches'] = getNumber(matchesText)
-    extractedData['TeamA Name'] = isSwapped ? teamBName : teamAName
-    extractedData['TeamA Win'] = isSwapped
-      ? getNumber(teamBWinText)
-      : getNumber(teamAWinText)
-    extractedData['Draw'] = getNumber(drawText)
-    extractedData['TeamB Win'] = isSwapped
-      ? getNumber(teamAWinText)
-      : getNumber(teamBWinText)
-    extractedData['TeamB Name'] = isSwapped ? teamAName : teamBName
+      // --- Team A Table ---
+      const teamATableNodeResult = doc.evaluate(
+        "./div[contains(@class, 'neo-team-overview')][1]/div[./div[contains(@class, 'second-table')]]",
+        neoRootNode,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null
+      )
+      const teamATableNode = teamATableNodeResult.singleNodeValue
+
+      if (teamATableNode) {
+        // Find xG node and extract its data
+        const xGNodeResult = doc.evaluate(
+          "./div[./div[text() = 'xG']]",
+          teamATableNode,
+          null,
+          XPathResult.FIRST_ORDERED_NODE_TYPE,
+          null
+        )
+        const xGNode = xGNodeResult.singleNodeValue
+        if (xGNode) {
+          extractedData.Neo.TeamATable.XG.Overall = getText('./div[2]', xGNode)
+          extractedData.Neo.TeamATable.XG.Home = getText('./div[3]', xGNode)
+          extractedData.Neo.TeamATable.XG.Away = getText('./div[4]', xGNode)
+        } else {
+          console.log("CSV Collector: 'xG' node not found. Skipping.")
+        }
+
+        // Find xGA node and extract its data
+        const xGANodeResult = doc.evaluate(
+          "./div[./div[text() = 'xGA']]",
+          teamATableNode,
+          null,
+          XPathResult.FIRST_ORDERED_NODE_TYPE,
+          null
+        )
+        const xGANode = xGANodeResult.singleNodeValue
+        if (xGANode) {
+          extractedData.Neo.TeamATable.XGA.Overall = getText(
+            './div[2]',
+            xGANode
+          )
+          extractedData.Neo.TeamATable.XGA.Home = getText('./div[3]', xGANode)
+          extractedData.Neo.TeamATable.XGA.Away = getText('./div[4]', xGANode)
+        } else {
+          console.log("CSV Collector: 'xGA' node not found. Skipping.")
+        }
+      } else {
+        console.log("CSV Collector: 'Team A Table' node not found. Skipping.")
+      }
+
+      // --- Team B Run ---
+      const teamBRunNodeResult = doc.evaluate(
+        "./div[contains(@class, 'neo-team-overview')][2]/div[./div/div/ul[contains(@class,'form-run')]]",
+        neoRootNode,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null
+      )
+      const teamBRunNode = teamBRunNodeResult.singleNodeValue
+
+      if (teamBRunNode) {
+        // Overall
+        const bOverallResultNodes = doc.evaluate(
+          "./div[2]/div/ul[contains(@class,'form-run')]/li",
+          teamBRunNode,
+          null,
+          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+          null
+        )
+        const bOverallResultTexts = []
+        for (let i = 0; i < bOverallResultNodes.snapshotLength; i++) {
+          bOverallResultTexts.push(
+            bOverallResultNodes.snapshotItem(i).textContent.trim()
+          )
+        }
+        extractedData.Neo.TeamBRun.Overall.Result = bOverallResultTexts.join('')
+        extractedData.Neo.TeamBRun.Overall.PPG = getText(
+          "./div[2]/div/div[contains(@class, 'form-box')]",
+          teamBRunNode
+        )
+
+        // Home
+        const bHomeResultNodes = doc.evaluate(
+          "./div[3]/div/ul[contains(@class,'form-run')]/li",
+          teamBRunNode,
+          null,
+          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+          null
+        )
+        const bHomeResultTexts = []
+        for (let i = 0; i < bHomeResultNodes.snapshotLength; i++) {
+          bHomeResultTexts.push(
+            bHomeResultNodes.snapshotItem(i).textContent.trim()
+          )
+        }
+        extractedData.Neo.TeamBRun.Home.Result = bHomeResultTexts.join('')
+        extractedData.Neo.TeamBRun.Home.PPG = getText(
+          "./div[3]/div/div[contains(@class, 'form-box')]",
+          teamBRunNode
+        )
+
+        // Away
+        const bAwayResultNodes = doc.evaluate(
+          "./div[4]/div/ul[contains(@class,'form-run')]/li",
+          teamBRunNode,
+          null,
+          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+          null
+        )
+        const bAwayResultTexts = []
+        for (let i = 0; i < bAwayResultNodes.snapshotLength; i++) {
+          bAwayResultTexts.push(
+            bAwayResultNodes.snapshotItem(i).textContent.trim()
+          )
+        }
+        extractedData.Neo.TeamBRun.Away.Result = bAwayResultTexts.join('')
+        extractedData.Neo.TeamBRun.Away.PPG = getText(
+          "./div[4]/div/div[contains(@class, 'form-box')]",
+          teamBRunNode
+        )
+      } else {
+        console.log("CSV Collector: 'Team B Run' node not found. Skipping.")
+      }
+
+      // --- Team B Table ---
+      const teamBTableNodeResult = doc.evaluate(
+        "./div[contains(@class, 'neo-team-overview')][2]/div[./div[contains(@class, 'second-table')]]",
+        neoRootNode,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null
+      )
+      const teamBTableNode = teamBTableNodeResult.singleNodeValue
+
+      if (teamBTableNode) {
+        const bXGNode = doc.evaluate(
+          "./div[./div[text() = 'xG']]",
+          teamBTableNode,
+          null,
+          XPathResult.FIRST_ORDERED_NODE_TYPE,
+          null
+        ).singleNodeValue
+        if (bXGNode) {
+          extractedData.Neo.TeamBTable.XG.Overall = getText('./div[2]', bXGNode)
+          extractedData.Neo.TeamBTable.XG.Home = getText('./div[3]', bXGNode)
+          extractedData.Neo.TeamBTable.XG.Away = getText('./div[4]', bXGNode)
+        }
+        const bXGANode = doc.evaluate(
+          "./div[./div[text() = 'xGA']]",
+          teamBTableNode,
+          null,
+          XPathResult.FIRST_ORDERED_NODE_TYPE,
+          null
+        ).singleNodeValue
+        if (bXGANode) {
+          extractedData.Neo.TeamBTable.XGA.Overall = getText(
+            './div[2]',
+            bXGANode
+          )
+          extractedData.Neo.TeamBTable.XGA.Home = getText('./div[3]', bXGANode)
+          extractedData.Neo.TeamBTable.XGA.Away = getText('./div[4]', bXGANode)
+        }
+      } else {
+        console.log("CSV Collector: 'Team B Table' node not found. Skipping.")
+      }
+    } else {
+      // Log nếu không tìm thấy phần Neo để dễ debug
+      console.log("CSV Collector: 'Neo' section root node not found. Skipping.")
+    }
 
     // Log đối tượng dữ liệu cuối cùng trước khi trả về
     console.log(
@@ -1468,7 +1775,7 @@
     // Log một bản tóm tắt ngắn gọn lên UI
     if (window.logToPopup)
       window.logToPopup(
-        `Extracted H2H: ${extractedData['TeamA Name']} ${extractedData['TeamA Win']} - ${extractedData['Draw']} - ${extractedData['TeamB Win']} ${extractedData['TeamB Name']}`
+        `Extracted H2H: ${extractedData.teamAName} ${extractedData.H2H.TeamAWin} - ${extractedData.H2H.Draw} - ${extractedData.H2H.TeamBWin} ${extractedData.teamBName}`
       )
 
     return extractedData

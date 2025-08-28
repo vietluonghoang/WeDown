@@ -320,9 +320,26 @@
         dataRows.forEach((rowData) => {
           const tr = document.createElement('tr')
           columnsToShow.forEach((colIndex) => {
+            const headerText = headers[colIndex] ?? ''
             // Dùng ?? '' để đảm bảo an toàn nếu dữ liệu cột không tồn tại
             const cellData = rowData[colIndex] ?? ''
-            tr.appendChild(createTableCell(cellData))
+
+            // Check if this is the URL column
+            if (
+              headerText === 'Match FootyStats URL' &&
+              (cellData.startsWith('http') || cellData.startsWith('/'))
+            ) {
+              const td = createTableCell('') // Create an empty cell
+              const link = document.createElement('a')
+              link.href = new URL(cellData, window.location.href).href
+              link.textContent = 'View'
+              link.target = '_blank' // Open in a new tab
+              link.rel = 'noopener noreferrer' // Security best practice
+              td.appendChild(link)
+              tr.appendChild(td)
+            } else {
+              tr.appendChild(createTableCell(cellData))
+            }
           })
           tbody.appendChild(tr)
         })
@@ -403,14 +420,12 @@
         const lastCell = row.cells[row.cells.length - 1]
         if (!lastCell) continue
 
-        const url = lastCell.textContent.trim()
+        // Lấy URL từ thẻ <a> nếu có, nếu không thì lấy text content
+        const linkElement = lastCell.querySelector('a[href]')
+        const url = linkElement ? linkElement.href : lastCell.textContent.trim()
 
         // Kiểm tra xem nội dung có phải là một URL tuyệt đối hoặc một đường dẫn tương đối (bắt đầu bằng /)
-        if (
-          url.startsWith('http://') ||
-          url.startsWith('https://') ||
-          url.startsWith('/')
-        ) {
+        if (url.startsWith('http') || url.startsWith('/')) {
           try {
             // --- DYNAMIC DELAY LOGIC ---
             // Wait until the configured delay has passed since the last request.
@@ -1396,7 +1411,7 @@
 
       if (!h2hNode) {
         window.logToPopup('H2H section not found. Skipping H2H data.')
-        extractedData.H2H.Error = 'Section not found' // Ghi lỗi vào data
+        extractedData.H2H.Error = 'H2H Section not found' // Ghi lỗi vào data
         return // Thoát khỏi hàm processH2H, nhưng không thoát khỏi hàm cha
       }
 

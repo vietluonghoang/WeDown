@@ -1342,13 +1342,15 @@
 
     // Define the final data structure.
     const extractedData = {
-      teamAName: '',
-      teamBName: '',
       MP: {
-        TeamA: '',
-        TeamB: '',
+        teamAName: '',
+        teamBName: '',
+        positionA: '',
+        positionB: '',
       },
       H2H: {
+        teamAName: '',
+        teamBName: '',
         Matches: '',
         TeamAWin: '',
         Draw: '',
@@ -1489,8 +1491,8 @@
         }
       }
 
-      extractedData.teamAName = isSwapped ? `[Swp] ${teamBName}` : teamAName
-      extractedData.teamBName = isSwapped ? teamAName : teamBName
+      extractedData.H2H.teamAName = isSwapped ? `[Swp] ${teamBName}` : teamAName
+      extractedData.H2H.teamBName = isSwapped ? teamAName : teamBName
       extractedData.H2H.Matches = getNumber(matchesText)
       extractedData.H2H.TeamAWin = isSwapped
         ? getNumber(teamBWinText)
@@ -1504,10 +1506,12 @@
     // 7. Placeholder for MP (Matches Played) section
     // TODO: Bổ sung XPath để lấy dữ liệu MP (Matches Played) cho mỗi đội.
     // Ví dụ: const teamAMpNode = doc.evaluate("XPATH_HERE", doc, ...).singleNodeValue;
-    // extractedData.MP.TeamA = getText("./path/to/value", teamAMpNode);
-    // extractedData.MP.TeamB = getText("./path/to/value", teamBMpNode);
-    extractedData.MP.TeamA = '' // Placeholder
-    extractedData.MP.TeamB = '' // Placeholder
+    // extractedData.MP.teamAName = getText("./path/to/name", teamAMpNode);
+    // extractedData.MP.positionA = getText("./path/to/position", teamAMpNode);
+    extractedData.MP.teamAName = '' // Placeholder
+    extractedData.MP.teamBName = '' // Placeholder
+    extractedData.MP.positionA = '' // Placeholder
+    extractedData.MP.positionB = '' // Placeholder
 
     // 8. Placeholder for "Neo" section
     const neoRootNodeResult = doc.evaluate(
@@ -1886,7 +1890,7 @@
     // Log một bản tóm tắt ngắn gọn lên UI
     if (window.logToPopup)
       window.logToPopup(
-        `Extracted H2H: ${extractedData.teamAName} ${extractedData.H2H.TeamAWin} - ${extractedData.H2H.Draw} - ${extractedData.H2H.TeamBWin} ${extractedData.teamBName}`
+        `Extracted H2H: ${extractedData.H2H.teamAName} ${extractedData.H2H.TeamAWin} - ${extractedData.H2H.Draw} - ${extractedData.H2H.TeamBWin} ${extractedData.H2H.teamBName}`
       )
 
     return extractedData

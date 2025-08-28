@@ -1489,7 +1489,7 @@
         }
       }
 
-      extractedData.teamAName = isSwapped ? teamBName : teamAName
+      extractedData.teamAName = isSwapped ? `[Swp] ${teamBName}` : teamAName
       extractedData.teamBName = isSwapped ? teamAName : teamBName
       extractedData.H2H.Matches = getNumber(matchesText)
       extractedData.H2H.TeamAWin = isSwapped
@@ -1776,6 +1776,102 @@
         }
       } else {
         console.log("CSV Collector: 'Team B Table' node not found. Skipping.")
+      }
+
+      // 9. Final check and swap for Neo data if needed.
+      // This logic runs *after* all data has been extracted as-is.
+      const getSimilarityScore = (name1, name2) => {
+        if (!name1 || !name2) return 0
+
+        // 1. Normalization function
+        const norm = (str) =>
+          str
+            .normalize('NFD') // Decompose combined characters (e.g., ö -> o + ¨)
+            .replace(/[\u0300-\u036f]/g, '') // Remove diacritical marks
+            .toLowerCase()
+
+        // 2. Word extraction function (with improved noise filtering)
+        const noiseWords = new Set([
+          'fc',
+          'cf',
+          'sc',
+          'fk',
+          'ac',
+          'sk',
+          'spvgg',
+          'tsv',
+          'vfb',
+          'sg',
+          'von',
+          'und',
+          'and',
+          'the',
+          'for',
+          'team',
+          'bk',
+          'club',
+          'women',
+        ])
+        const getWords = (s) =>
+          new Set(
+            (norm(s).match(/\w+/g) || []).filter(
+              (w) =>
+                !noiseWords.has(w) &&
+                !/^\d+$/.test(w) &&
+                !/^(u\d{1,2}|ii|w|m)$/.test(w)
+            )
+          )
+
+        const words1 = getWords(name1)
+        const words2 = getWords(name2)
+
+        if (words1.size === 0 && words2.size === 0) return 1.0 // Both are empty, perfect match
+        if (words1.size === 0 || words2.size === 0) return 0 // One is empty, no match
+
+        // 3. Jaccard Index Calculation
+        const intersection = new Set([...words1].filter((x) => words2.has(x)))
+        const union = new Set([...words1, ...words2])
+
+        return union.size === 0 ? 1.0 : intersection.size / union.size
+      }
+
+      // Calculate the 4 scores using Jaccard index
+      const scoreAH = getSimilarityScore(neoTeamAName, homeTeamNameCsv)
+      const scoreAA = getSimilarityScore(neoTeamAName, awayTeamNameCsv)
+      const scoreBH = getSimilarityScore(neoTeamBName, homeTeamNameCsv)
+      const scoreBA = getSimilarityScore(neoTeamBName, awayTeamNameCsv)
+
+      // Log the scores for debugging
+      window.logToPopup(
+        `Scores for ${homeTeamNameCsv}: A/H=${scoreAH.toFixed(
+          2
+        )}, A/A=${scoreAA.toFixed(2)}, B/H=${scoreBH.toFixed(
+          2
+        )}, B/A=${scoreBA.toFixed(2)}`
+      )
+
+      // New swap logic: swap if the "swapped" pairing has a higher total score
+      const scoreNoSwap = scoreAH + scoreBA // (A vs Home) + (B vs Away)
+      const scoreSwap = scoreAA + scoreBH // (A vs Away) + (B vs Home)
+
+      if (scoreSwap > scoreNoSwap) {
+        window.logToPopup(
+          `Neo teams swapped for ${homeTeamNameCsv}. Correcting order.`
+        )
+
+        // Perform the swap using array destructuring for conciseness
+        ;[extractedData.Neo.TeamAName, extractedData.Neo.TeamBName] = [
+          `[Swp] ${extractedData.Neo.TeamBName}`,
+          extractedData.Neo.TeamAName,
+        ]
+        ;[extractedData.Neo.TeamARun, extractedData.Neo.TeamBRun] = [
+          extractedData.Neo.TeamBRun,
+          extractedData.Neo.TeamARun,
+        ]
+        ;[extractedData.Neo.TeamATable, extractedData.Neo.TeamBTable] = [
+          extractedData.Neo.TeamBTable,
+          extractedData.Neo.TeamATable,
+        ]
       }
     } else {
       // Log nếu không tìm thấy phần Neo để dễ debug

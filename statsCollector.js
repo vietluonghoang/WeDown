@@ -1410,6 +1410,9 @@
         TeamAWin: '',
         Draw: '',
         TeamBWin: '',
+        Last5TeamAWin: '',
+        Last5TeamBWin: '',
+        Last5Draw: '',
       },
       Neo: {
         TeamAName: '',
@@ -1556,6 +1559,69 @@
       extractedData.H2H.TeamBWin = isSwapped
         ? getNumber(teamAWinText)
         : getNumber(teamBWinText)
+
+      // --- Last 5 Matches Processing ---
+      let last5TeamAWinCount = 0
+      let last5TeamBWinCount = 0
+      let last5DrawCount = 0
+
+      const last5NodeResult = doc.evaluate(
+        "./div[contains(@class, 'sliding-fixtures')]/div[contains(@class, 'inner')]",
+        h2hNode,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null
+      )
+      const last5Node = last5NodeResult.singleNodeValue
+
+      if (last5Node) {
+        const last5Matches = doc.evaluate(
+          './a',
+          last5Node,
+          null,
+          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+          null
+        )
+
+        const limit = Math.min(last5Matches.snapshotLength, 5)
+        for (let i = 0; i < limit; i++) {
+          const matchNode = last5Matches.snapshotItem(i)
+          const winnerDivs = doc.evaluate(
+            "./div[contains(@class, 'winner')]",
+            matchNode,
+            null,
+            XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+            null
+          )
+
+          if (winnerDivs.snapshotLength === 2) {
+            last5DrawCount++
+          } else if (winnerDivs.snapshotLength === 1) {
+            const winnerName = winnerDivs.snapshotItem(0).textContent.trim()
+            // Use fuzzy matching to determine the winner
+            const scoreVsA = getSimilarityScore(winnerName, teamAName)
+            const scoreVsB = getSimilarityScore(winnerName, teamBName)
+
+            if (scoreVsA > scoreVsB) {
+              last5TeamAWinCount++
+            } else if (scoreVsB > scoreVsA) {
+              last5TeamBWinCount++
+            } else if (scoreVsA > 0) {
+              // Handle ambiguous case where scores are equal but not zero
+              window.logToPopup(`Ambiguous Last 5 winner: '${winnerName}'`)
+            }
+          }
+        }
+      }
+
+      // Gán dữ liệu "Last 5" vào object, hoán đổi nếu cần
+      extractedData.H2H.Last5TeamAWin = isSwapped
+        ? last5TeamBWinCount
+        : last5TeamAWinCount
+      extractedData.H2H.Last5Draw = last5DrawCount
+      extractedData.H2H.Last5TeamBWin = isSwapped
+        ? last5TeamAWinCount
+        : last5TeamBWinCount
     })() // Chạy hàm xử lý H2H ngay lập tức
 
     // 7. Placeholder for MP (Matches Played) section

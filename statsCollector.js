@@ -1340,6 +1340,61 @@
     // Helper to extract just the number from strings like "10 Wins"
     const getNumber = (text) => (text.match(/\d+/) || [''])[0]
 
+    const getSimilarityScore = (name1, name2) => {
+      if (!name1 || !name2) return 0
+
+      // 1. Normalization function
+      const norm = (str) =>
+        str
+          .normalize('NFD') // Decompose combined characters (e.g., ö -> o + ¨)
+          .replace(/[\u0300-\u036f]/g, '') // Remove diacritical marks
+          .toLowerCase()
+
+      // 2. Word extraction function (with improved noise filtering)
+      const noiseWords = new Set([
+        'fc',
+        'cf',
+        'sc',
+        'fk',
+        'ac',
+        'sk',
+        'spvgg',
+        'tsv',
+        'vfb',
+        'sg',
+        'von',
+        'und',
+        'and',
+        'the',
+        'for',
+        'team',
+        'bk',
+        'club',
+        'women',
+      ])
+      const getWords = (s) =>
+        new Set(
+          (norm(s).match(/\w+/g) || []).filter(
+            (w) =>
+              !noiseWords.has(w) &&
+              !/^\d+$/.test(w) &&
+              !/^(u\d{1,2}|ii|w|m)$/.test(w)
+          )
+        )
+
+      const words1 = getWords(name1)
+      const words2 = getWords(name2)
+
+      if (words1.size === 0 && words2.size === 0) return 1.0 // Both are empty, perfect match
+      if (words1.size === 0 || words2.size === 0) return 0 // One is empty, no match
+
+      // 3. Jaccard Index Calculation
+      const intersection = new Set([...words1].filter((x) => words2.has(x)))
+      const union = new Set([...words1, ...words2])
+
+      return union.size === 0 ? 1.0 : intersection.size / union.size
+    }
+
     // Define the final data structure.
     const extractedData = {
       MP: {
@@ -1504,14 +1559,74 @@
     })() // Chạy hàm xử lý H2H ngay lập tức
 
     // 7. Placeholder for MP (Matches Played) section
-    // TODO: Bổ sung XPath để lấy dữ liệu MP (Matches Played) cho mỗi đội.
-    // Ví dụ: const teamAMpNode = doc.evaluate("XPATH_HERE", doc, ...).singleNodeValue;
-    // extractedData.MP.teamAName = getText("./path/to/name", teamAMpNode);
-    // extractedData.MP.positionA = getText("./path/to/position", teamAMpNode);
-    extractedData.MP.teamAName = '' // Placeholder
-    extractedData.MP.teamBName = '' // Placeholder
-    extractedData.MP.positionA = '' // Placeholder
-    extractedData.MP.positionB = '' // Placeholder
+    const mpNodeResult = doc.evaluate(
+      "./section[contains(@data-parents, 'stats') and contains(@data-parents, 'tables')]",
+      rootNode,
+      null,
+      XPathResult.FIRST_ORDERED_NODE_TYPE,
+      null
+    )
+    const mpNode = mpNodeResult.singleNodeValue
+
+    if (mpNode) {
+      // Team A data
+      extractedData.MP.teamAName = getText(
+        ".//div[contains(@class, 'row')]/div[1]/table[contains(@class, 'miniTableNeo')]/tbody/tr[contains(@class, 'selected')]/td[contains(@class,'leagueTableTeamName')]/a/div",
+        mpNode
+      )
+      extractedData.MP.positionA = getText(
+        ".//div[contains(@class, 'row')]/div[1]/table[contains(@class, 'miniTableNeo')]/tbody/tr[contains(@class, 'selected')]/td[preceding-sibling::*[1][self::td and contains(@class,'leagueTableTeamName')]]/p",
+        mpNode
+      )
+
+      // Team B data (assuming it's in the second div)
+      extractedData.MP.teamBName = getText(
+        ".//div[contains(@class, 'row')]/div[2]/table[contains(@class, 'miniTableNeo')]/tbody/tr[contains(@class, 'selected')]/td[contains(@class,'leagueTableTeamName')]/a/div",
+        mpNode
+      )
+      extractedData.MP.positionB = getText(
+        ".//div[contains(@class, 'row')]/div[2]/table[contains(@class, 'miniTableNeo')]/tbody/tr[contains(@class, 'selected')]/td[preceding-sibling::*[1][self::td and contains(@class,'leagueTableTeamName')]]/p",
+        mpNode
+      )
+    } else {
+      console.log("CSV Collector: 'MP' section not found. Skipping.")
+    }
+
+    // Swap MP data if needed, similar to Neo and H2H logic
+    if (extractedData.MP.teamAName && extractedData.MP.teamBName) {
+      const scoreAH = getSimilarityScore(
+        extractedData.MP.teamAName,
+        homeTeamNameCsv
+      )
+      const scoreAA = getSimilarityScore(
+        extractedData.MP.teamAName,
+        awayTeamNameCsv
+      )
+      const scoreBH = getSimilarityScore(
+        extractedData.MP.teamBName,
+        homeTeamNameCsv
+      )
+      const scoreBA = getSimilarityScore(
+        extractedData.MP.teamBName,
+        awayTeamNameCsv
+      )
+
+      const scoreNoSwap = scoreAH + scoreBA
+      const scoreSwap = scoreAA + scoreBH
+
+      if (scoreSwap > scoreNoSwap) {
+        window.logToPopup(
+          `MP teams swapped for ${homeTeamNameCsv}. Correcting order.`
+        )
+        const tempName = extractedData.MP.teamAName
+        extractedData.MP.teamAName = `[Swp] ${extractedData.MP.teamBName}`
+        extractedData.MP.teamBName = tempName
+        ;[extractedData.MP.positionA, extractedData.MP.positionB] = [
+          extractedData.MP.positionB,
+          extractedData.MP.positionA,
+        ]
+      }
+    }
 
     // 8. Placeholder for "Neo" section
     const neoRootNodeResult = doc.evaluate(
@@ -1784,61 +1899,6 @@
 
       // 9. Final check and swap for Neo data if needed.
       // This logic runs *after* all data has been extracted as-is.
-      const getSimilarityScore = (name1, name2) => {
-        if (!name1 || !name2) return 0
-
-        // 1. Normalization function
-        const norm = (str) =>
-          str
-            .normalize('NFD') // Decompose combined characters (e.g., ö -> o + ¨)
-            .replace(/[\u0300-\u036f]/g, '') // Remove diacritical marks
-            .toLowerCase()
-
-        // 2. Word extraction function (with improved noise filtering)
-        const noiseWords = new Set([
-          'fc',
-          'cf',
-          'sc',
-          'fk',
-          'ac',
-          'sk',
-          'spvgg',
-          'tsv',
-          'vfb',
-          'sg',
-          'von',
-          'und',
-          'and',
-          'the',
-          'for',
-          'team',
-          'bk',
-          'club',
-          'women',
-        ])
-        const getWords = (s) =>
-          new Set(
-            (norm(s).match(/\w+/g) || []).filter(
-              (w) =>
-                !noiseWords.has(w) &&
-                !/^\d+$/.test(w) &&
-                !/^(u\d{1,2}|ii|w|m)$/.test(w)
-            )
-          )
-
-        const words1 = getWords(name1)
-        const words2 = getWords(name2)
-
-        if (words1.size === 0 && words2.size === 0) return 1.0 // Both are empty, perfect match
-        if (words1.size === 0 || words2.size === 0) return 0 // One is empty, no match
-
-        // 3. Jaccard Index Calculation
-        const intersection = new Set([...words1].filter((x) => words2.has(x)))
-        const union = new Set([...words1, ...words2])
-
-        return union.size === 0 ? 1.0 : intersection.size / union.size
-      }
-
       // Calculate the 4 scores using Jaccard index
       const scoreAH = getSimilarityScore(neoTeamAName, homeTeamNameCsv)
       const scoreAA = getSimilarityScore(neoTeamAName, awayTeamNameCsv)

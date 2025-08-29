@@ -291,7 +291,7 @@
         // ================== USER CONFIGURATION ==================
         // Chỉ định các cột (theo index, bắt đầu từ 0) muốn hiển thị.
         // Tương ứng với cột 2,3,4,5,6,46,47,48,107 trong file CSV (do index bắt đầu từ 0).
-        const columnsToShow = [1, 2, 3, 4, 5, 45, 46, 47, 106]
+        const columnsToShow = [1, 2, 3, 4, 5, 14, 45, 46, 47, 49, 106]
         // ========================================================
 
         // Create header row
@@ -627,8 +627,17 @@
 
       // --- Đồng bộ hóa toàn bộ bảng (header và các dòng) ---
       // 1. Vẽ lại toàn bộ header bổ sung từ danh sách chính
+      const hiddenHeaders = new Set([
+        'MP teamAName',
+        'MP teamBName',
+        'H2H teamAName',
+        'H2H teamBName',
+        'Neo TeamAName',
+        'Neo TeamBName',
+      ])
       headerRow.querySelectorAll('.extra-header').forEach((th) => th.remove())
       state.extraHeaders.forEach((key) => {
+        if (hiddenHeaders.has(key)) return // Tạm ẩn cột
         const th = document.createElement('th')
         th.textContent = key
         th.classList.add('extra-header')
@@ -644,6 +653,7 @@
           r.querySelectorAll('.extra-cell').forEach((c) => c.remove()) // Xóa ô cũ
           // Thêm lại các ô mới theo đúng thứ tự header
           state.extraHeaders.forEach((headerKey) => {
+            if (hiddenHeaders.has(headerKey)) return // Tạm ẩn ô
             const value = rowData[headerKey] ?? ''
             const cell = createTableCell(value)
             cell.classList.add('extra-cell')
@@ -1400,8 +1410,8 @@
       MP: {
         teamAName: '',
         teamBName: '',
-        positionA: '',
-        positionB: '',
+        mpA: '',
+        mpB: '',
       },
       H2H: {
         teamAName: '',
@@ -1587,7 +1597,7 @@
         for (let i = 0; i < limit; i++) {
           const matchNode = last5Matches.snapshotItem(i)
           const winnerDivs = doc.evaluate(
-            "./div[contains(@class, 'winner')]",
+            ".//div[contains(@class, 'winner')]",
             matchNode,
             null,
             XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
@@ -1640,7 +1650,7 @@
         ".//div[contains(@class, 'row')]/div[1]/table[contains(@class, 'miniTableNeo')]/tbody/tr[contains(@class, 'selected')]/td[contains(@class,'leagueTableTeamName')]/a/div",
         mpNode
       )
-      extractedData.MP.positionA = getText(
+      extractedData.MP.mpA = getText(
         ".//div[contains(@class, 'row')]/div[1]/table[contains(@class, 'miniTableNeo')]/tbody/tr[contains(@class, 'selected')]/td[preceding-sibling::*[1][self::td and contains(@class,'leagueTableTeamName')]]/p",
         mpNode
       )
@@ -1650,7 +1660,7 @@
         ".//div[contains(@class, 'row')]/div[2]/table[contains(@class, 'miniTableNeo')]/tbody/tr[contains(@class, 'selected')]/td[contains(@class,'leagueTableTeamName')]/a/div",
         mpNode
       )
-      extractedData.MP.positionB = getText(
+      extractedData.MP.mpB = getText(
         ".//div[contains(@class, 'row')]/div[2]/table[contains(@class, 'miniTableNeo')]/tbody/tr[contains(@class, 'selected')]/td[preceding-sibling::*[1][self::td and contains(@class,'leagueTableTeamName')]]/p",
         mpNode
       )
@@ -1687,9 +1697,9 @@
         const tempName = extractedData.MP.teamAName
         extractedData.MP.teamAName = `[Swp] ${extractedData.MP.teamBName}`
         extractedData.MP.teamBName = tempName
-        ;[extractedData.MP.positionA, extractedData.MP.positionB] = [
-          extractedData.MP.positionB,
-          extractedData.MP.positionA,
+        ;[extractedData.MP.mpA, extractedData.MP.mpB] = [
+          extractedData.MP.mpB,
+          extractedData.MP.mpA,
         ]
       }
     }

@@ -233,7 +233,7 @@
 
     /**
      * Parses a string of CSV text into an array of arrays.
-     * Handles quoted fields containing commas.
+     * Handles quoted fields containing commas, newlines, and escaped quotes ("").
      * @param {string} csvText - The raw CSV text.
      * @returns {Array<Array<string>>} The parsed data.
      */
@@ -241,26 +241,49 @@
       const rows = []
       if (!csvText) return rows
 
-      const lines = csvText.trim().split('\n')
-      for (const line of lines) {
-        const row = []
-        let currentField = ''
-        let inQuotes = false
-        for (let i = 0; i < line.length; i++) {
-          const char = line[i]
-          if (char === '"' && (i === 0 || line[i - 1] !== '\\')) {
-            // Handles standard quotes, ignores escaped quotes
-            inQuotes = !inQuotes
-          } else if (char === ',' && !inQuotes) {
-            row.push(currentField.trim())
-            currentField = ''
-          } else {
-            currentField += char
-          }
-        }
+      let row = []
+      let currentField = ''
+      let inQuotes = false
+
+      const pushField = () => {
         row.push(currentField.trim())
-        rows.push(row)
+        currentField = ''
       }
+
+      const pushRow = () => {
+        pushField()
+        // Skip a final empty row from trailing newline(s).
+        if (row.length > 1 || row[0] !== '' || rows.length === 0) {
+          rows.push(row)
+        }
+        row = []
+      }
+
+      for (let i = 0; i < csvText.length; i++) {
+        const char = csvText[i]
+        const nextChar = csvText[i + 1]
+
+        if (char === '"') {
+          if (inQuotes && nextChar === '"') {
+            currentField += '"'
+            i++
+          } else {
+            inQuotes = !inQuotes
+          }
+        } else if (char === ',' && !inQuotes) {
+          pushField()
+        } else if ((char === '\n' || char === '\r') && !inQuotes) {
+          if (char === '\r' && nextChar === '\n') i++
+          pushRow()
+        } else {
+          currentField += char
+        }
+      }
+
+      if (currentField !== '' || row.length > 0) {
+        pushRow()
+      }
+
       return rows
     }
 

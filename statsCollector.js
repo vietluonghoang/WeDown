@@ -102,6 +102,7 @@
           visibleExtraColumns: Array.isArray(parsed.visibleExtraColumns)
             ? parsed.visibleExtraColumns.filter((value) => typeof value === 'string')
             : null,
+          dateTimeMode: parsed.dateTimeMode === 'gmt' ? 'gmt' : 'local',
         }
       } catch (_) {
         return {
@@ -111,6 +112,7 @@
           requestDelay: 3,
           visibleColumns: null,
           visibleExtraColumns: null,
+          dateTimeMode: 'local',
         }
       }
     }
@@ -152,6 +154,7 @@
 
     // ==================== CSV COLUMN CONFIGURATION ====================
     const CSV_COLUMNS = {
+      DATE_GMT: 1,
       HOME_TEAM: 4,
       AWAY_TEAM: 5,
       MATCH_URL: 106,
@@ -219,6 +222,77 @@
     function rebuildExtraHeadersFromCache() {
       state.extraHeaders = []
       state.extraDataByUrl.forEach((extraData) => registerExtraHeaders(extraData))
+    }
+
+    function formatCsvCellValue(colIndex, value) {
+      if (colIndex !== CSV_COLUMNS.DATE_GMT) {
+        return value
+      }
+
+      const rawValue = String(value || '').trim()
+      if (!rawValue) return value
+
+      const normalizedValue = (() => {
+        if (/(?:Z|[+-]\d{2}:?\d{2})$/.test(rawValue)) return rawValue
+
+        const compactDateMatch = rawValue.match(
+          /^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/
+        )
+        if (compactDateMatch) {
+          const [, day, month, year, hour, minute, second = '00'] =
+            compactDateMatch
+          return `${year}-${month.padStart(2, '0')}-${day.padStart(
+            2,
+            '0'
+          )}T${hour.padStart(2, '0')}:${minute}:${second.padStart(2, '0')}Z`
+        }
+
+        const footyStatsDateMatch = rawValue.match(
+          /^([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})\s+-\s+(\d{1,2}):(\d{2})(am|pm)$/i
+        )
+        if (footyStatsDateMatch) {
+          const [, monthName, day, year, hourText, minute, meridiem] =
+            footyStatsDateMatch
+          const monthIndex = [
+            'jan',
+            'feb',
+            'mar',
+            'apr',
+            'may',
+            'jun',
+            'jul',
+            'aug',
+            'sep',
+            'oct',
+            'nov',
+            'dec',
+          ].indexOf(monthName.toLowerCase())
+          if (monthIndex >= 0) {
+            let hour = Number(hourText)
+            if (meridiem.toLowerCase() === 'pm' && hour !== 12) hour += 12
+            if (meridiem.toLowerCase() === 'am' && hour === 12) hour = 0
+            return new Date(
+              Date.UTC(Number(year), monthIndex, Number(day), hour, Number(minute))
+            ).toISOString()
+          }
+        }
+
+        return `${rawValue} GMT`
+      })()
+      const date = new Date(normalizedValue)
+      if (Number.isNaN(date.getTime())) return value
+
+      const timeZone = settings.dateTimeMode === 'gmt' ? 'UTC' : undefined
+      const timeZoneName = settings.dateTimeMode === 'gmt' ? 'GMT' : 'Local'
+      return `${date.toLocaleString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone,
+      })} (${timeZoneName})`
     }
 
     // ==================== UTILITY FUNCTIONS ====================
@@ -420,7 +494,6 @@
           // Lấy header, nếu không tồn tại thì dùng tên mặc định
           const headerText = headers[colIndex] ?? `Cột ${colIndex + 1}`
           const th = document.createElement('th')
-          th.textContent = headerText
           th.style.cssText = `
             border: 1px solid ${CONSTANTS.COLORS.BORDER};
             padding: 8px;
@@ -430,6 +503,30 @@
             position: sticky;
             top: 0;
           `
+          if (colIndex === CSV_COLUMNS.DATE_GMT) {
+            const toggleDateModeBtn = document.createElement('button')
+            toggleDateModeBtn.textContent = `${headerText} (${settings.dateTimeMode === 'gmt' ? 'GMT' : 'Local'})`
+            toggleDateModeBtn.title = 'Click to toggle Local/GMT time display'
+            toggleDateModeBtn.style.cssText =
+              'border: none; background: transparent; font: inherit; font-weight: bold; padding: 0; cursor: pointer; text-decoration: underline;'
+            toggleDateModeBtn.addEventListener('click', () => {
+              settings.dateTimeMode = settings.dateTimeMode === 'gmt' ? 'local' : 'gmt'
+              saveSettings(settings)
+              if (window.csvCollectorSettingsPanel?._inputs?.dateModeSelect) {
+                window.csvCollectorSettingsPanel._inputs.dateModeSelect.value =
+                  settings.dateTimeMode
+              }
+              updateTableWithData(data, tbody, true)
+              window.logToPopup(
+                `date_GMT display switched to ${
+                  settings.dateTimeMode === 'gmt' ? 'GMT' : 'Local'
+                }.`
+              )
+            })
+            th.appendChild(toggleDateModeBtn)
+          } else {
+            th.textContent = headerText
+          }
           headerRow.appendChild(th)
         })
         thead.appendChild(headerRow)
@@ -444,16 +541,17 @@
           visibleColumns.forEach((colIndex) => {
             const headerText = headers[colIndex] ?? ''
             // Dùng ?? '' để đảm bảo an toàn nếu dữ liệu cột không tồn tại
-            const cellData = rowData[colIndex] ?? ''
+            const rawCellData = rowData[colIndex] ?? ''
+            const cellData = formatCsvCellValue(colIndex, rawCellData)
 
             // Check if this is the URL column
             if (
               headerText === 'Match FootyStats URL' &&
-              (cellData.startsWith('http') || cellData.startsWith('/'))
+              (rawCellData.startsWith('http') || rawCellData.startsWith('/'))
             ) {
               const td = createTableCell('') // Create an empty cell
               const link = document.createElement('a')
-              link.href = new URL(cellData, window.location.href).href
+              link.href = new URL(rawCellData, window.location.href).href
               link.textContent = 'View'
               link.target = '_blank' // Open in a new tab
               link.rel = 'noopener noreferrer' // Security best practice
@@ -1285,6 +1383,28 @@
       panelBody.appendChild(defInt.row)
       panelBody.appendChild(reqDelay.row)
 
+      const dateModeRow = document.createElement('div')
+      dateModeRow.style.cssText =
+        'display: flex; align-items: center; justify-content: space-between; margin: 6px 0; gap: 8px;'
+      const dateModeLabel = document.createElement('label')
+      dateModeLabel.textContent = 'date_GMT display'
+      dateModeLabel.setAttribute('for', 'cc-date-mode')
+      const dateModeSelect = document.createElement('select')
+      dateModeSelect.id = 'cc-date-mode'
+      dateModeSelect.style.cssText = 'width: 90px; padding: 2px 4px;'
+      const localOption = document.createElement('option')
+      localOption.value = 'local'
+      localOption.textContent = 'Local'
+      const gmtOption = document.createElement('option')
+      gmtOption.value = 'gmt'
+      gmtOption.textContent = 'GMT'
+      dateModeSelect.appendChild(localOption)
+      dateModeSelect.appendChild(gmtOption)
+      dateModeSelect.value = settings.dateTimeMode || 'local'
+      dateModeRow.appendChild(dateModeLabel)
+      dateModeRow.appendChild(dateModeSelect)
+      panelBody.appendChild(dateModeRow)
+
       const columnSection = document.createElement('div')
       columnSection.style.cssText = `margin-top: 10px; padding-top: 8px; border-top: 1px solid ${CONSTANTS.COLORS.BORDER};`
       const columnTitle = document.createElement('div')
@@ -1361,7 +1481,7 @@
       actions.appendChild(save)
       panel.appendChild(actions)
 
-      panel._inputs = { noData, hasData, defInt, reqDelay }
+      panel._inputs = { noData, hasData, defInt, reqDelay, dateModeSelect }
       panel._buttons = {
         cancel,
         save,
@@ -1440,6 +1560,9 @@
         const newReqDelay = parseFloat(panel._inputs.reqDelay.input.value)
         if (!isNaN(newReqDelay))
           settings.requestDelay = Math.max(0, newReqDelay)
+
+        settings.dateTimeMode =
+          panel._inputs.dateModeSelect.value === 'gmt' ? 'gmt' : 'local'
 
         const selectedColumns = Array.from(
           panel._columnList.querySelectorAll("input[type='checkbox']:checked")

@@ -92,6 +92,14 @@
               ? Number(parsed.dataFoundInterval)
               : CONSTANTS.REFRESH.DATA_FOUND_INTERVAL,
           requestDelay: Number(reqDelay) >= 0 ? Number(reqDelay) : 3, // Default 3s
+          visibleColumns: Array.isArray(parsed.visibleColumns)
+            ? parsed.visibleColumns
+                .map((value) => Number(value))
+                .filter((value) => Number.isInteger(value) && value >= 0)
+            : null,
+          visibleExtraColumns: Array.isArray(parsed.visibleExtraColumns)
+            ? parsed.visibleExtraColumns.filter((value) => typeof value === 'string')
+            : null,
         }
       } catch (_) {
         return {
@@ -99,6 +107,8 @@
           noDataInterval: CONSTANTS.REFRESH.NO_DATA_INTERVAL,
           dataFoundInterval: CONSTANTS.REFRESH.DATA_FOUND_INTERVAL,
           requestDelay: 3,
+          visibleColumns: null,
+          visibleExtraColumns: null,
         }
       }
     }
@@ -133,6 +143,7 @@
       isProcessingUrls: false, // To specifically track this background task
       cancelProcessing: false, // Flag to signal cancellation
       extraHeaders: [], // Stores the keys of extra columns in order
+      extraDataByUrl: new Map(), // Runtime extracted data keyed by Match FootyStats URL
       userHasResized: false,
       autoScrollLog: true,
     }
@@ -144,7 +155,69 @@
       MATCH_URL: 106,
     }
 
-    const columnsToShow = [1, 2, 3, 4, 5, 14, 45, 46, 47, 49, 106]
+    const REQUIRED_VISIBLE_COLUMNS = [1, 2, 3, 4, 5, 106]
+    const DEFAULT_COLUMNS_TO_SHOW = [1, 2, 3, 4, 5, 14, 45, 46, 47, 49, 106]
+
+    function getVisibleColumns(headers = []) {
+      const maxIndex = headers.length > 0 ? headers.length - 1 : Infinity
+      const savedColumns = Array.isArray(settings.visibleColumns)
+        ? settings.visibleColumns
+        : DEFAULT_COLUMNS_TO_SHOW
+      const uniqueColumns = []
+
+      savedColumns.forEach((colIndex) => {
+        if (
+          Number.isInteger(colIndex) &&
+          colIndex >= 0 &&
+          colIndex <= maxIndex &&
+          !uniqueColumns.includes(colIndex)
+        ) {
+          uniqueColumns.push(colIndex)
+        }
+      })
+
+      const columns = uniqueColumns.length > 0 ? uniqueColumns : DEFAULT_COLUMNS_TO_SHOW
+      REQUIRED_VISIBLE_COLUMNS.forEach((colIndex) => {
+        if (colIndex <= maxIndex && !columns.includes(colIndex)) {
+          columns.push(colIndex)
+        }
+      })
+
+      return columns.sort((a, b) => a - b)
+    }
+
+    const HIDDEN_EXTRA_HEADERS = new Set([
+      'MP teamAName',
+      'MP teamBName',
+      'H2H teamAName',
+      'H2H teamBName',
+      'Neo TeamAName',
+      'Neo TeamBName',
+    ])
+
+    function getVisibleExtraHeaders() {
+      const availableHeaders = state.extraHeaders.filter(
+        (key) => !HIDDEN_EXTRA_HEADERS.has(key)
+      )
+      if (!Array.isArray(settings.visibleExtraColumns)) return availableHeaders
+
+      return availableHeaders.filter((key) =>
+        settings.visibleExtraColumns.includes(key)
+      )
+    }
+
+    function registerExtraHeaders(flattenedData) {
+      Object.keys(flattenedData).forEach((key) => {
+        if (!state.extraHeaders.includes(key)) {
+          state.extraHeaders.push(key)
+        }
+      })
+    }
+
+    function rebuildExtraHeadersFromCache() {
+      state.extraHeaders = []
+      state.extraDataByUrl.forEach((extraData) => registerExtraHeaders(extraData))
+    }
 
     // ==================== UTILITY FUNCTIONS ====================
     /**
@@ -327,18 +400,21 @@
         const thead = table.querySelector('thead')
         tbody.innerHTML = ''
         thead.innerHTML = ''
-        state.extraHeaders = []
+        rebuildExtraHeadersFromCache()
+        const headers = data && data.length > 0 ? data[0] : []
+        const visibleColumns = getVisibleColumns(headers)
 
         if (!data || data.length === 0) {
           // Cập nhật colspan để khớp với số cột sẽ hiển thị.
-          tbody.innerHTML = `<tr><td colspan="${columnsToShow.length}">No data to display.</td></tr>`
+          tbody.innerHTML = `<tr><td colspan="${visibleColumns.length}">No data to display.</td></tr>`
           return
         }
 
+        updateColumnSettingsPanel(headers)
+
         // Create header row
         const headerRow = document.createElement('tr')
-        const headers = data[0]
-        columnsToShow.forEach((colIndex) => {
+        visibleColumns.forEach((colIndex) => {
           // Lấy header, nếu không tồn tại thì dùng tên mặc định
           const headerText = headers[colIndex] ?? `Cột ${colIndex + 1}`
           const th = document.createElement('th')
@@ -363,7 +439,7 @@
           tr.dataset.homeTeam = rowData[CSV_COLUMNS.HOME_TEAM] ?? ''
           tr.dataset.awayTeam = rowData[CSV_COLUMNS.AWAY_TEAM] ?? ''
           tr.dataset.matchUrl = rowData[CSV_COLUMNS.MATCH_URL] ?? ''
-          columnsToShow.forEach((colIndex) => {
+          visibleColumns.forEach((colIndex) => {
             const headerText = headers[colIndex] ?? ''
             // Dùng ?? '' để đảm bảo an toàn nếu dữ liệu cột không tồn tại
             const cellData = rowData[colIndex] ?? ''
@@ -385,8 +461,15 @@
               tr.appendChild(createTableCell(cellData))
             }
           })
+          const cachedExtraData = state.extraDataByUrl.get(tr.dataset.matchUrl)
+          if (cachedExtraData) {
+            tr.extraData = cachedExtraData
+            tr.dataset.processed = 'done'
+          }
           tbody.appendChild(tr)
         })
+
+        syncExtraColumnsForTable(table)
 
         window.logToPopup(`Table updated with ${dataRows.length} rows.`)
         adjustPopupWidth()
@@ -420,6 +503,38 @@
         popup.style.width = `${newWidth}px`
         state.originalWidth = newWidth
       }
+    }
+
+    function syncExtraColumnsForTable(table) {
+      if (!table) return
+
+      const headerRow = table.querySelector('thead tr')
+      if (!headerRow) return
+
+      headerRow.querySelectorAll('.extra-header').forEach((th) => th.remove())
+      const visibleExtraHeaders = getVisibleExtraHeaders()
+      visibleExtraHeaders.forEach((key) => {
+        const th = document.createElement('th')
+        th.textContent = key
+        th.classList.add('extra-header')
+        th.style.cssText = `border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 8px; background-color: ${CONSTANTS.COLORS.HEADER_BACKGROUND}; font-weight: bold; text-align: left; position: sticky; top: 0;`
+        headerRow.appendChild(th)
+      })
+
+      table.querySelectorAll('tbody tr').forEach((row) => {
+        row.querySelectorAll('.extra-cell').forEach((cell) => cell.remove())
+        if (row.dataset.processed !== 'done') return
+
+        const rowData = row.extraData || {}
+        visibleExtraHeaders.forEach((headerKey) => {
+          const value = rowData[headerKey] ?? ''
+          const cell = createTableCell(value)
+          cell.classList.add('extra-cell')
+          row.appendChild(cell)
+        })
+      })
+
+      updateExtraColumnSettingsPanel()
     }
 
     /**
@@ -662,54 +777,17 @@
 
         const flattenedData = flattenObject(extraData)
 
-        // Cập nhật danh sách header chính từ dữ liệu đã được làm phẳng
-        Object.keys(flattenedData).forEach((key) => {
-          if (!state.extraHeaders.includes(key)) {
-            state.extraHeaders.push(key)
-          }
-        })
+        registerExtraHeaders(flattenedData)
 
         // Gán dữ liệu đã được làm phẳng vào hàng
         row.extraData = flattenedData
+        if (row.dataset.matchUrl) {
+          state.extraDataByUrl.set(row.dataset.matchUrl, flattenedData)
+        }
         row.dataset.processed = 'done'
       }
 
-      // --- Đồng bộ hóa toàn bộ bảng (header và các dòng) ---
-      // 1. Vẽ lại toàn bộ header bổ sung từ danh sách chính
-      const hiddenHeaders = new Set([
-        'MP teamAName',
-        'MP teamBName',
-        'H2H teamAName',
-        'H2H teamBName',
-        'Neo TeamAName',
-        'Neo TeamBName',
-      ])
-      headerRow.querySelectorAll('.extra-header').forEach((th) => th.remove())
-      state.extraHeaders.forEach((key) => {
-        if (hiddenHeaders.has(key)) return // Tạm ẩn cột
-        const th = document.createElement('th')
-        th.textContent = key
-        th.classList.add('extra-header')
-        th.style.cssText = `border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 8px; background-color: ${CONSTANTS.COLORS.HEADER_BACKGROUND}; font-weight: bold; text-align: left; position: sticky; top: 0;`
-        headerRow.appendChild(th)
-      })
-
-      // 2. Đồng bộ hóa tất cả các dòng đã xử lý thành công
-      const allRows = table.querySelectorAll('tbody tr')
-      allRows.forEach((r) => {
-        if (r.dataset.processed === 'done') {
-          const rowData = r.extraData || {}
-          r.querySelectorAll('.extra-cell').forEach((c) => c.remove()) // Xóa ô cũ
-          // Thêm lại các ô mới theo đúng thứ tự header
-          state.extraHeaders.forEach((headerKey) => {
-            if (hiddenHeaders.has(headerKey)) return // Tạm ẩn ô
-            const value = rowData[headerKey] ?? ''
-            const cell = createTableCell(value)
-            cell.classList.add('extra-cell')
-            r.appendChild(cell)
-          })
-        }
-      })
+      syncExtraColumnsForTable(table)
 
       adjustPopupWidth()
     }
@@ -794,6 +872,7 @@
 
         window.logToPopup(`Found CSV link: ${csvLink}`)
         const csvData = await fetchAndParseCsv(csvLink)
+        window.csvCollectorLastCsvData = csvData
 
         if (window.csvCollectorTbody) {
           updateTableWithData(csvData, window.csvCollectorTbody, force)
@@ -1032,6 +1111,103 @@
       })
     }
 
+    function updateColumnSettingsPanel(headers = []) {
+      if (!window.csvCollectorSettingsPanel) return
+
+      const panel = window.csvCollectorSettingsPanel
+      const list = panel._columnList
+      const searchInput = panel._columnSearch
+      if (!list || !searchInput) return
+
+      list.innerHTML = ''
+      const selectedColumns = new Set(getVisibleColumns(headers))
+      headers.forEach((header, index) => {
+        const isRequired = REQUIRED_VISIBLE_COLUMNS.includes(index)
+        const label = document.createElement('label')
+        label.dataset.searchText = `${index + 1} ${index} ${header}`.toLowerCase()
+        label.style.cssText =
+          'display:flex; align-items:center; gap:6px; padding:2px 0; cursor:pointer;'
+
+        const checkbox = document.createElement('input')
+        checkbox.type = 'checkbox'
+        checkbox.value = String(index)
+        checkbox.checked = isRequired || selectedColumns.has(index)
+        checkbox.disabled = isRequired
+
+        const text = document.createElement('span')
+        text.textContent = `${index + 1}. ${header || `Cột ${index + 1}`}${
+          isRequired ? ' (fixed)' : ''
+        }`
+
+        label.appendChild(checkbox)
+        label.appendChild(text)
+        list.appendChild(label)
+      })
+
+      const applyFilter = () => {
+        const query = searchInput.value.trim().toLowerCase()
+        list.querySelectorAll('label').forEach((label) => {
+          label.style.display = label.dataset.searchText.includes(query)
+            ? 'flex'
+            : 'none'
+        })
+      }
+
+      searchInput.oninput = applyFilter
+      applyFilter()
+    }
+
+    function updateExtraColumnSettingsPanel() {
+      if (!window.csvCollectorSettingsPanel) return
+
+      const panel = window.csvCollectorSettingsPanel
+      const list = panel._extraColumnList
+      const searchInput = panel._extraColumnSearch
+      if (!list || !searchInput) return
+
+      list.innerHTML = ''
+      const availableHeaders = state.extraHeaders.filter(
+        (key) => !HIDDEN_EXTRA_HEADERS.has(key)
+      )
+      const selectedHeaders = new Set(getVisibleExtraHeaders())
+
+      if (availableHeaders.length === 0) {
+        list.textContent = 'Process URLs to show runtime columns.'
+        return
+      }
+
+      availableHeaders.forEach((key) => {
+        const label = document.createElement('label')
+        label.dataset.searchText = key.toLowerCase()
+        label.style.cssText =
+          'display:flex; align-items:center; gap:6px; padding:2px 0; cursor:pointer;'
+
+        const checkbox = document.createElement('input')
+        checkbox.type = 'checkbox'
+        checkbox.value = key
+        checkbox.checked = selectedHeaders.has(key)
+
+        const text = document.createElement('span')
+        text.textContent = key
+
+        label.appendChild(checkbox)
+        label.appendChild(text)
+        list.appendChild(label)
+      })
+
+      const applyFilter = () => {
+        const query = searchInput.value.trim().toLowerCase()
+        list.querySelectorAll('label').forEach((label) => {
+          label.style.display = label.dataset.searchText.includes(query)
+            ? 'flex'
+            : 'none'
+        })
+      }
+
+      searchInput.oninput = applyFilter
+      applyFilter()
+    }
+
     function createSettingsPanel() {
       const panel = document.createElement('div')
       panel.style.cssText = `
@@ -1041,8 +1217,12 @@
         border: 1px solid ${
           CONSTANTS.COLORS.BORDER
         }; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-        border-radius: 4px; padding: 10px; z-index: 10000; min-width: 260px;
+        border-radius: 4px; z-index: 10000; min-width: 320px;
+        max-height: calc(100vh - 120px); overflow: hidden; flex-direction: column;
         display: none; font-size: 12px;`
+
+      const panelBody = document.createElement('div')
+      panelBody.style.cssText = 'padding: 10px; overflow: auto; min-height: 0;'
 
       const field = (labelText, initValue, id) => {
         const row = document.createElement('div')
@@ -1083,14 +1263,79 @@
         settings.requestDelay,
         'cc-req-delay'
       )
-      panel.appendChild(noData.row)
-      panel.appendChild(hasData.row)
-      panel.appendChild(defInt.row)
-      panel.appendChild(reqDelay.row)
+      panelBody.appendChild(noData.row)
+      panelBody.appendChild(hasData.row)
+      panelBody.appendChild(defInt.row)
+      panelBody.appendChild(reqDelay.row)
+
+      const columnSection = document.createElement('div')
+      columnSection.style.cssText = `margin-top: 10px; padding-top: 8px; border-top: 1px solid ${CONSTANTS.COLORS.BORDER};`
+      const columnTitle = document.createElement('div')
+      columnTitle.textContent = 'Visible CSV columns'
+      columnTitle.style.cssText = 'font-weight: bold; margin-bottom: 6px;'
+      const columnSearch = document.createElement('input')
+      columnSearch.type = 'search'
+      columnSearch.placeholder = 'Search column...'
+      columnSearch.style.cssText =
+        'width: 100%; box-sizing: border-box; padding: 3px 5px; margin-bottom: 6px;'
+
+      const columnActions = document.createElement('div')
+      columnActions.style.cssText =
+        'display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap;'
+      const selectAll = document.createElement('button')
+      selectAll.textContent = 'All'
+      const selectDefault = document.createElement('button')
+      selectDefault.textContent = 'Default'
+      const clearColumns = document.createElement('button')
+      clearColumns.textContent = 'Clear'
+      columnActions.appendChild(selectAll)
+      columnActions.appendChild(selectDefault)
+      columnActions.appendChild(clearColumns)
+
+      const columnList = document.createElement('div')
+      columnList.style.cssText = `max-height: 220px; overflow: auto; border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 6px; background: #fff;`
+      columnList.textContent = 'Load CSV to show columns.'
+
+      columnSection.appendChild(columnTitle)
+      columnSection.appendChild(columnSearch)
+      columnSection.appendChild(columnActions)
+      columnSection.appendChild(columnList)
+      panelBody.appendChild(columnSection)
+
+      const extraColumnSection = document.createElement('div')
+      extraColumnSection.style.cssText = `margin-top: 10px; padding-top: 8px; border-top: 1px solid ${CONSTANTS.COLORS.BORDER};`
+      const extraColumnTitle = document.createElement('div')
+      extraColumnTitle.textContent = 'Visible runtime columns'
+      extraColumnTitle.style.cssText = 'font-weight: bold; margin-bottom: 6px;'
+      const extraColumnSearch = document.createElement('input')
+      extraColumnSearch.type = 'search'
+      extraColumnSearch.placeholder = 'Search runtime column...'
+      extraColumnSearch.style.cssText =
+        'width: 100%; box-sizing: border-box; padding: 3px 5px; margin-bottom: 6px;'
+
+      const extraColumnActions = document.createElement('div')
+      extraColumnActions.style.cssText =
+        'display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap;'
+      const extraSelectAll = document.createElement('button')
+      extraSelectAll.textContent = 'All'
+      const extraClearColumns = document.createElement('button')
+      extraClearColumns.textContent = 'Clear'
+      extraColumnActions.appendChild(extraSelectAll)
+      extraColumnActions.appendChild(extraClearColumns)
+
+      const extraColumnList = document.createElement('div')
+      extraColumnList.style.cssText = `max-height: 220px; overflow: auto; border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 6px; background: #fff;`
+      extraColumnList.textContent = 'Process URLs to show runtime columns.'
+
+      extraColumnSection.appendChild(extraColumnTitle)
+      extraColumnSection.appendChild(extraColumnSearch)
+      extraColumnSection.appendChild(extraColumnActions)
+      extraColumnSection.appendChild(extraColumnList)
+      panelBody.appendChild(extraColumnSection)
+      panel.appendChild(panelBody)
 
       const actions = document.createElement('div')
-      actions.style.cssText =
-        'margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px;'
+      actions.style.cssText = `padding: 8px 10px; display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid ${CONSTANTS.COLORS.BORDER}; background: white; flex-shrink: 0;`
       const cancel = document.createElement('button')
       cancel.textContent = 'Cancel'
       const save = document.createElement('button')
@@ -1100,7 +1345,19 @@
       panel.appendChild(actions)
 
       panel._inputs = { noData, hasData, defInt, reqDelay }
-      panel._buttons = { cancel, save }
+      panel._buttons = {
+        cancel,
+        save,
+        selectAll,
+        selectDefault,
+        clearColumns,
+        extraSelectAll,
+        extraClearColumns,
+      }
+      panel._columnList = columnList
+      panel._columnSearch = columnSearch
+      panel._extraColumnList = extraColumnList
+      panel._extraColumnSearch = extraColumnSearch
       return panel
     }
 
@@ -1110,9 +1367,46 @@
         'click',
         () =>
           (panel.style.display =
-            panel.style.display === 'none' ? 'block' : 'none')
+            panel.style.display === 'none' ? 'flex' : 'none')
       )
       panel._buttons.cancel.addEventListener('click', close)
+      panel._buttons.selectAll.addEventListener('click', () => {
+        panel._columnList
+          .querySelectorAll("input[type='checkbox']")
+          .forEach((checkbox) => {
+            checkbox.checked = true
+          })
+      })
+      panel._buttons.selectDefault.addEventListener('click', () => {
+        const defaultColumns = new Set(DEFAULT_COLUMNS_TO_SHOW)
+        panel._columnList
+          .querySelectorAll("input[type='checkbox']")
+          .forEach((checkbox) => {
+            checkbox.checked =
+              checkbox.disabled || defaultColumns.has(Number(checkbox.value))
+          })
+      })
+      panel._buttons.clearColumns.addEventListener('click', () => {
+        panel._columnList
+          .querySelectorAll("input[type='checkbox']")
+          .forEach((checkbox) => {
+            checkbox.checked = checkbox.disabled
+          })
+      })
+      panel._buttons.extraSelectAll.addEventListener('click', () => {
+        panel._extraColumnList
+          .querySelectorAll("input[type='checkbox']")
+          .forEach((checkbox) => {
+            checkbox.checked = true
+          })
+      })
+      panel._buttons.extraClearColumns.addEventListener('click', () => {
+        panel._extraColumnList
+          .querySelectorAll("input[type='checkbox']")
+          .forEach((checkbox) => {
+            checkbox.checked = false
+          })
+      })
       panel._buttons.save.addEventListener('click', () => {
         const newNoData = parseFloat(panel._inputs.noData.input.value)
         if (!isNaN(newNoData))
@@ -1130,7 +1424,34 @@
         if (!isNaN(newReqDelay))
           settings.requestDelay = Math.max(0, newReqDelay)
 
+        const selectedColumns = Array.from(
+          panel._columnList.querySelectorAll("input[type='checkbox']:checked")
+        ).map((checkbox) => Number(checkbox.value))
+        REQUIRED_VISIBLE_COLUMNS.forEach((colIndex) => {
+          if (!selectedColumns.includes(colIndex)) selectedColumns.push(colIndex)
+        })
+        if (panel._columnList.querySelectorAll("input[type='checkbox']").length) {
+          settings.visibleColumns = selectedColumns.sort((a, b) => a - b)
+        }
+
+        const selectedExtraColumns = Array.from(
+          panel._extraColumnList.querySelectorAll("input[type='checkbox']:checked")
+        ).map((checkbox) => checkbox.value)
+        if (
+          panel._extraColumnList.querySelectorAll("input[type='checkbox']").length
+        ) {
+          settings.visibleExtraColumns = selectedExtraColumns
+        }
+
         saveSettings(settings)
+
+        if (window.csvCollectorLastCsvData && window.csvCollectorTbody) {
+          updateTableWithData(
+            window.csvCollectorLastCsvData,
+            window.csvCollectorTbody,
+            true
+          )
+        }
 
         // Only update intervals if not processing URLs in the background
         if (!state.isProcessingUrls) {
@@ -1323,6 +1644,7 @@
       resizeHandle.style.cssText = `position: absolute; right: 0; bottom: 0; width: 10px; height: 10px; cursor: se-resize;`
 
       const settingsPanel = createSettingsPanel()
+      window.csvCollectorSettingsPanel = settingsPanel
 
       popup.appendChild(header)
       popup.appendChild(contentWrapper)

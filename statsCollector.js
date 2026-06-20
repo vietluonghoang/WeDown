@@ -59,6 +59,7 @@
       LOG: {
         MAX_LINES: 500,
       },
+      Z_INDEX: 2147483647,
     }
 
     // ==================== SETTINGS (USER CONFIG) ====================
@@ -1036,6 +1037,20 @@
       document.addEventListener('mouseup', handleMouseUp)
     }
 
+    function setupAutoSizeButton(popup, autoSizeBtn) {
+      autoSizeBtn.addEventListener('click', () => {
+        state.userHasResized = false
+        popup.style.width = `${CONSTANTS.POPUP.DEFAULT_WIDTH}px`
+        popup.style.height = ''
+        popup.style.minWidth = `${CONSTANTS.POPUP.MIN_WIDTH}px`
+        popup.style.minHeight = `${CONSTANTS.POPUP.MIN_HEIGHT}px`
+        adjustPopupWidth()
+        state.originalWidth = popup.offsetWidth
+        state.originalHeight = popup.offsetHeight
+        window.logToPopup('Popup size reset to auto.')
+      })
+    }
+
     function setupToggle(popup, toggleBtn, contentWrapper) {
       toggleBtn.addEventListener('click', () => {
         state.isCollapsed = !state.isCollapsed
@@ -1218,7 +1233,7 @@
         border: 1px solid ${
           CONSTANTS.COLORS.BORDER
         }; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-        border-radius: 4px; z-index: 10000; min-width: 320px;
+        border-radius: 4px; z-index: ${CONSTANTS.Z_INDEX}; min-width: 320px;
         max-height: calc(100vh - 120px); overflow: hidden; flex-direction: column;
         display: none; font-size: 12px;`
 
@@ -1500,7 +1515,7 @@
         min-width: ${CONSTANTS.POPUP.MIN_WIDTH}px; max-width: calc(100vw - 20px - 20px);
         max-height: calc(100vh - 70px - 20px); background: ${CONSTANTS.COLORS.BACKGROUND};
         border: 1px solid ${CONSTANTS.COLORS.BORDER}; border-radius: 4px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1); z-index: 9999; display: flex;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1); z-index: ${CONSTANTS.Z_INDEX}; display: flex;
         flex-direction: column; overflow: hidden;`
 
       const header = document.createElement('div')
@@ -1531,6 +1546,10 @@
       settingsBtn.textContent = '⚙️'
       settingsBtn.title = 'Settings'
       settingsBtn.style.cssText = `background: none; border: none; color: white; cursor: pointer; font-size: 16px;`
+      const autoSizeBtn = document.createElement('button')
+      autoSizeBtn.textContent = '⤢'
+      autoSizeBtn.title = 'Reset popup size to auto'
+      autoSizeBtn.style.cssText = `background: none; border: none; color: white; cursor: pointer; font-size: 16px;`
       const toggleBtn = document.createElement('button')
       toggleBtn.textContent = '−'
       toggleBtn.title = 'Collapse'
@@ -1539,6 +1558,7 @@
       controlsContainer.appendChild(refreshIndicator)
       controlsContainer.appendChild(refreshButton)
       controlsContainer.appendChild(settingsBtn)
+      controlsContainer.appendChild(autoSizeBtn)
       controlsContainer.appendChild(toggleBtn)
       header.appendChild(titleContainer)
       header.appendChild(controlsContainer)
@@ -1642,7 +1662,7 @@
       contentWrapper.appendChild(logArea)
 
       const resizeHandle = document.createElement('div')
-      resizeHandle.style.cssText = `position: absolute; right: 0; bottom: 0; width: 10px; height: 10px; cursor: se-resize;`
+      resizeHandle.style.cssText = `position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: se-resize; z-index: 1; background: linear-gradient(135deg, transparent 50%, rgba(0,0,0,0.25) 50%);`
 
       const settingsPanel = createSettingsPanel()
       window.csvCollectorSettingsPanel = settingsPanel
@@ -1672,6 +1692,7 @@
       // Setup interactions
       setupDragAndDrop(popup, header)
       setupResize(popup, resizeHandle)
+      setupAutoSizeButton(popup, autoSizeBtn)
       setupToggle(popup, toggleBtn, contentWrapper)
       setupRefreshButton(refreshButton)
       setupRefreshIndicator(refreshIndicator, header, refreshButton)

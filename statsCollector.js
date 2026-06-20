@@ -52,6 +52,12 @@
       ANIMATIONS: {
         SPIN_DURATION: 1000,
       },
+      REQUEST: {
+        TIMEOUT: 30000,
+      },
+      LOG: {
+        MAX_LINES: 500,
+      },
     }
 
     // ==================== SETTINGS (USER CONFIG) ====================
@@ -105,11 +111,11 @@
 
     // ==================== STATE MANAGEMENT ====================
     const state = {
-      timeLeft: CONSTANTS.REFRESH.DEFAULT_INTERVAL,
+      timeLeft: settings.defaultInterval,
       refreshIntervalId: null,
       isPaused: false,
       isRefreshing: false,
-      currentInterval: CONSTANTS.REFRESH.DEFAULT_INTERVAL,
+      currentInterval: settings.defaultInterval,
       isDragging: false,
       isResizing: false,
       isCollapsed: false,
@@ -130,6 +136,15 @@
       userHasResized: false,
       autoScrollLog: true,
     }
+
+    // ==================== CSV COLUMN CONFIGURATION ====================
+    const CSV_COLUMNS = {
+      HOME_TEAM: 4,
+      AWAY_TEAM: 5,
+      MATCH_URL: 106,
+    }
+
+    const columnsToShow = [1, 2, 3, 4, 5, 14, 45, 46, 47, 49, 106]
 
     // ==================== UTILITY FUNCTIONS ====================
     /**
@@ -190,6 +205,7 @@
         GM_xmlhttpRequest({
           method: 'GET',
           url: url,
+          timeout: CONSTANTS.REQUEST.TIMEOUT,
           onload: function (response) {
             if (response.status >= 200 && response.status < 300) {
               window.logToPopup('CSV file fetched successfully. Parsing...')
@@ -202,7 +218,14 @@
             }
           },
           onerror: function (error) {
-            reject(new Error(`Network error fetching CSV: ${error.details}`))
+            reject(
+              new Error(
+                `Network error fetching CSV: ${error.details || 'unknown'}`
+              )
+            )
+          },
+          ontimeout: function () {
+            reject(new Error(`Timeout fetching CSV after ${CONSTANTS.REQUEST.TIMEOUT / 1000}s`))
           },
         })
       })
@@ -281,18 +304,13 @@
         const thead = table.querySelector('thead')
         tbody.innerHTML = ''
         thead.innerHTML = ''
+        state.extraHeaders = []
 
         if (!data || data.length === 0) {
-          // Cập nhật colspan để khớp với số cột sẽ hiển thị (9 cột)
-          tbody.innerHTML = '<tr><td colspan="9">No data to display.</td></tr>'
+          // Cập nhật colspan để khớp với số cột sẽ hiển thị.
+          tbody.innerHTML = `<tr><td colspan="${columnsToShow.length}">No data to display.</td></tr>`
           return
         }
-
-        // ================== USER CONFIGURATION ==================
-        // Chỉ định các cột (theo index, bắt đầu từ 0) muốn hiển thị.
-        // Tương ứng với cột 2,3,4,5,6,46,47,48,107 trong file CSV (do index bắt đầu từ 0).
-        const columnsToShow = [1, 2, 3, 4, 5, 14, 45, 46, 47, 49, 106]
-        // ========================================================
 
         // Create header row
         const headerRow = document.createElement('tr')
@@ -319,6 +337,9 @@
         const dataRows = data.slice(1)
         dataRows.forEach((rowData) => {
           const tr = document.createElement('tr')
+          tr.dataset.homeTeam = rowData[CSV_COLUMNS.HOME_TEAM] ?? ''
+          tr.dataset.awayTeam = rowData[CSV_COLUMNS.AWAY_TEAM] ?? ''
+          tr.dataset.matchUrl = rowData[CSV_COLUMNS.MATCH_URL] ?? ''
           columnsToShow.forEach((colIndex) => {
             const headerText = headers[colIndex] ?? ''
             // Dùng ?? '' để đảm bảo an toàn nếu dữ liệu cột không tồn tại
@@ -403,26 +424,19 @@
           break // Exit the loop
         }
 
-        // Bỏ qua nếu dòng đã được xử lý hoặc đang được xử lý
-        if (row.dataset.processed) continue
+        // Bỏ qua nếu dòng đã xử lý xong hoặc đang được xử lý; cho phép retry dòng lỗi.
+        if (
+          row.dataset.processed === 'done' ||
+          row.dataset.processed === 'loading'
+        )
+          continue
 
         // Đánh dấu là đang xử lý để tránh lặp lại
         row.dataset.processed = 'loading'
 
-        // Lấy tên đội nhà/khách từ các ô của bảng để so sánh
-        const homeTeamNameCsv = row.cells[3]
-          ? row.cells[3].textContent.trim()
-          : null
-        const awayTeamNameCsv = row.cells[4]
-          ? row.cells[4].textContent.trim()
-          : null
-
-        const lastCell = row.cells[row.cells.length - 1]
-        if (!lastCell) continue
-
-        // Lấy URL từ thẻ <a> nếu có, nếu không thì lấy text content
-        const linkElement = lastCell.querySelector('a[href]')
-        const url = linkElement ? linkElement.href : lastCell.textContent.trim()
+        const homeTeamNameCsv = row.dataset.homeTeam || null
+        const awayTeamNameCsv = row.dataset.awayTeam || null
+        const url = row.dataset.matchUrl || ''
 
         // Kiểm tra xem nội dung có phải là một URL tuyệt đối hoặc một đường dẫn tương đối (bắt đầu bằng /)
         if (url.startsWith('http') || url.startsWith('/')) {
@@ -501,13 +515,25 @@
               GM_xmlhttpRequest({
                 method: 'GET',
                 url: absoluteUrl,
+                timeout: CONSTANTS.REQUEST.TIMEOUT,
                 onload: function (response) {
                   res(response)
                 },
                 onerror: function (error) {
                   rej(
                     new Error(
-                      `Network error fetching ${absoluteUrl}: ${error.details}`
+                      `Network error fetching ${absoluteUrl}: ${
+                        error.details || 'unknown'
+                      }`
+                    )
+                  )
+                },
+                ontimeout: function () {
+                  rej(
+                    new Error(
+                      `Timeout fetching ${absoluteUrl} after ${
+                        CONSTANTS.REQUEST.TIMEOUT / 1000
+                      }s`
                     )
                   )
                 },
@@ -673,11 +699,16 @@
      * @param {Function} asyncFn - Hàm async để thực thi trong lúc refresh bị tạm dừng.
      */
     async function withRefreshSuspended(asyncFn) {
+      if (state.isProcessingUrls) {
+        window.logToPopup('URL processing is already running. Skipping duplicate task.')
+        return
+      }
+
       const wasAlreadyPaused = state.isPaused
+      state.isProcessingUrls = true // Set processing state
+      state.cancelProcessing = false // Reset cancellation flag
       if (!wasAlreadyPaused) {
         state.isPaused = true
-        state.isProcessingUrls = true // Set processing state
-        state.cancelProcessing = false // Reset cancellation flag
         if (window.csvCollectorRefreshIndicator) {
           // Cập nhật UI để cho biết một tiến trình đang chạy
           window.csvCollectorRefreshIndicator.textContent = 'Processing URLs...'
@@ -694,9 +725,9 @@
         )
         window.logToPopup(`Error during URL processing: ${error.message}`)
       } finally {
+        state.isProcessingUrls = false // Reset processing state
         if (!wasAlreadyPaused) {
           state.isPaused = false
-          state.isProcessingUrls = false // Reset processing state
           // Reset lại đồng hồ đếm ngược để bắt đầu một chu kỳ mới
           state.timeLeft = state.currentInterval
           if (window.csvCollectorRefreshIndicator) {
@@ -1280,7 +1311,13 @@
       window.csvCollectorRefreshIndicator = refreshIndicator
       window.logToPopup = (message) => {
         const timestamp = new Date().toLocaleTimeString()
-        logArea.value += `[${timestamp}] ${message}\n`
+        const lines = logArea.value ? logArea.value.split('\n') : []
+        if (lines[lines.length - 1] === '') lines.pop()
+        lines.push(`[${timestamp}] ${message}`)
+        if (lines.length > CONSTANTS.LOG.MAX_LINES) {
+          lines.splice(0, lines.length - CONSTANTS.LOG.MAX_LINES)
+        }
+        logArea.value = `${lines.join('\n')}\n`
         if (state.autoScrollLog) {
           logArea.scrollTop = logArea.scrollHeight
         }
@@ -1539,20 +1576,21 @@
         contentNode
       )
 
-      const normalize = (str) => (str ? str.toLowerCase().trim() : '')
-      const h2hTeamA_norm = normalize(teamAName)
-      const csvHome_norm = normalize(homeTeamNameCsv)
-
       let isSwapped = false
-      if (h2hTeamA_norm && csvHome_norm && h2hTeamA_norm !== csvHome_norm) {
-        const h2hTeamB_norm = normalize(teamBName)
-        const csvAway_norm = normalize(awayTeamNameCsv)
-        if (h2hTeamA_norm === csvAway_norm && h2hTeamB_norm === csvHome_norm) {
+      if (teamAName && teamBName && homeTeamNameCsv && awayTeamNameCsv) {
+        const scoreAH = getSimilarityScore(teamAName, homeTeamNameCsv)
+        const scoreAA = getSimilarityScore(teamAName, awayTeamNameCsv)
+        const scoreBH = getSimilarityScore(teamBName, homeTeamNameCsv)
+        const scoreBA = getSimilarityScore(teamBName, awayTeamNameCsv)
+        const scoreNoSwap = scoreAH + scoreBA
+        const scoreSwap = scoreAA + scoreBH
+
+        if (scoreSwap > scoreNoSwap) {
           isSwapped = true
           window.logToPopup(
             `H2H teams swapped for ${homeTeamNameCsv}. Correcting order.`
           )
-        } else {
+        } else if (scoreNoSwap === 0) {
           window.logToPopup(
             `Warning: H2H/CSV name mismatch for ${homeTeamNameCsv}.`
           )
@@ -1729,249 +1767,114 @@
       extractedData.Neo.TeamAName = neoTeamAName
       extractedData.Neo.TeamBName = neoTeamBName
 
-      // --- Team A Run ---
-      // TODO: Bổ sung XPath để tìm node cha cho phần "Team A Run" bên trong neoRootNode
-      const teamARunNodeResult = doc.evaluate(
-        "./div[contains(@class, 'neo-team-overview')][1]/div[./div/div/ul[contains(@class,'form-run')]]",
-        neoRootNode,
-        null,
-        XPathResult.FIRST_ORDERED_NODE_TYPE,
-        null
-      )
-      const teamARunNode = teamARunNodeResult.singleNodeValue
-
-      if (teamARunNode) {
-        // Trích xuất Overall Result: lấy text từ tất cả các thẻ <li> và nối lại.
-        const overallResultNodes = doc.evaluate(
-          "./div[2]/div/ul[contains(@class,'form-run')]/li",
-          teamARunNode,
-          null,
-          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-          null
-        )
-        const resultTexts = []
-        for (let i = 0; i < overallResultNodes.snapshotLength; i++) {
-          resultTexts.push(
-            overallResultNodes.snapshotItem(i).textContent.trim()
-          )
+      function extractFormRun(runNode, label) {
+        const emptyRun = {
+          Overall: { Result: '', PPG: '' },
+          Home: { Result: '', PPG: '' },
+          Away: { Result: '', PPG: '' },
         }
-        extractedData.Neo.TeamARun.Overall.Result = resultTexts.join('')
 
-        // Trích xuất Overall PPG
-        extractedData.Neo.TeamARun.Overall.PPG = getText(
-          "./div[2]/div/div[contains(@class, 'form-box')]",
-          teamARunNode
-        )
-
-        // Trích xuất Home Result và PPG
-        const homeResultNodes = doc.evaluate(
-          "./div[3]/div/ul[contains(@class,'form-run')]/li",
-          teamARunNode,
-          null,
-          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-          null
-        )
-        const homeResultTexts = []
-        for (let i = 0; i < homeResultNodes.snapshotLength; i++) {
-          homeResultTexts.push(
-            homeResultNodes.snapshotItem(i).textContent.trim()
-          )
+        if (!runNode) {
+          console.log(`CSV Collector: '${label} Run' node not found. Skipping.`)
+          return emptyRun
         }
-        extractedData.Neo.TeamARun.Home.Result = homeResultTexts.join('')
-        extractedData.Neo.TeamARun.Home.PPG = getText(
-          "./div[3]/div/div[contains(@class, 'form-box')]",
-          teamARunNode
-        )
 
-        // Trích xuất Away Result và PPG
-        const awayResultNodes = doc.evaluate(
-          "./div[4]/div/ul[contains(@class,'form-run')]/li",
-          teamARunNode,
-          null,
-          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-          null
-        )
-        const awayResultTexts = []
-        for (let i = 0; i < awayResultNodes.snapshotLength; i++) {
-          awayResultTexts.push(
-            awayResultNodes.snapshotItem(i).textContent.trim()
+        const extractSegment = (divIndex) => {
+          const resultNodes = doc.evaluate(
+            `./div[${divIndex}]/div/ul[contains(@class,'form-run')]/li`,
+            runNode,
+            null,
+            XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+            null
           )
+          const resultTexts = []
+          for (let i = 0; i < resultNodes.snapshotLength; i++) {
+            resultTexts.push(resultNodes.snapshotItem(i).textContent.trim())
+          }
+
+          return {
+            Result: resultTexts.join(''),
+            PPG: getText(
+              `./div[${divIndex}]/div/div[contains(@class, 'form-box')]`,
+              runNode
+            ),
+          }
         }
-        extractedData.Neo.TeamARun.Away.Result = awayResultTexts.join('')
-        extractedData.Neo.TeamARun.Away.PPG = getText(
-          "./div[4]/div/div[contains(@class, 'form-box')]",
-          teamARunNode
-        )
-      } else {
-        console.log("CSV Collector: 'Team A Run' node not found. Skipping.")
+
+        return {
+          Overall: extractSegment(2),
+          Home: extractSegment(3),
+          Away: extractSegment(4),
+        }
       }
 
-      // --- Team A Table ---
-      const teamATableNodeResult = doc.evaluate(
-        "./div[contains(@class, 'neo-team-overview')][1]/div[./div[contains(@class, 'second-table')]]",
-        neoRootNode,
-        null,
-        XPathResult.FIRST_ORDERED_NODE_TYPE,
-        null
-      )
-      const teamATableNode = teamATableNodeResult.singleNodeValue
-
-      if (teamATableNode) {
-        // Find xG node and extract its data
-        const xGNodeResult = doc.evaluate(
-          "./div[./div[text() = 'xG']]",
-          teamATableNode,
-          null,
-          XPathResult.FIRST_ORDERED_NODE_TYPE,
-          null
-        )
-        const xGNode = xGNodeResult.singleNodeValue
-        if (xGNode) {
-          extractedData.Neo.TeamATable.XG.Overall = getText('./div[2]', xGNode)
-          extractedData.Neo.TeamATable.XG.Home = getText('./div[3]', xGNode)
-          extractedData.Neo.TeamATable.XG.Away = getText('./div[4]', xGNode)
-        } else {
-          console.log("CSV Collector: 'xG' node not found. Skipping.")
+      function extractNeoTable(tableNode, label) {
+        const tableData = {
+          XG: { Overall: '', Home: '', Away: '' },
+          XGA: { Overall: '', Home: '', Away: '' },
         }
 
-        // Find xGA node and extract its data
-        const xGANodeResult = doc.evaluate(
-          "./div[./div[text() = 'xGA']]",
-          teamATableNode,
-          null,
-          XPathResult.FIRST_ORDERED_NODE_TYPE,
-          null
-        )
-        const xGANode = xGANodeResult.singleNodeValue
-        if (xGANode) {
-          extractedData.Neo.TeamATable.XGA.Overall = getText(
-            './div[2]',
-            xGANode
-          )
-          extractedData.Neo.TeamATable.XGA.Home = getText('./div[3]', xGANode)
-          extractedData.Neo.TeamATable.XGA.Away = getText('./div[4]', xGANode)
-        } else {
-          console.log("CSV Collector: 'xGA' node not found. Skipping.")
+        if (!tableNode) {
+          console.log(`CSV Collector: '${label} Table' node not found. Skipping.`)
+          return tableData
         }
-      } else {
-        console.log("CSV Collector: 'Team A Table' node not found. Skipping.")
+
+        const extractMetric = (metric) => {
+          const metricNode = doc.evaluate(
+            `./div[./div[text() = '${metric}']]`,
+            tableNode,
+            null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE,
+            null
+          ).singleNodeValue
+
+          if (!metricNode) {
+            console.log(`CSV Collector: '${metric}' node not found. Skipping.`)
+            return tableData[metric]
+          }
+
+          return {
+            Overall: getText('./div[2]', metricNode),
+            Home: getText('./div[3]', metricNode),
+            Away: getText('./div[4]', metricNode),
+          }
+        }
+
+        tableData.XG = extractMetric('xG')
+        tableData.XGA = extractMetric('xGA')
+        return tableData
       }
 
-      // --- Team B Run ---
-      const teamBRunNodeResult = doc.evaluate(
-        "./div[contains(@class, 'neo-team-overview')][2]/div[./div/div/ul[contains(@class,'form-run')]]",
-        neoRootNode,
-        null,
-        XPathResult.FIRST_ORDERED_NODE_TYPE,
-        null
-      )
-      const teamBRunNode = teamBRunNodeResult.singleNodeValue
-
-      if (teamBRunNode) {
-        // Overall
-        const bOverallResultNodes = doc.evaluate(
-          "./div[2]/div/ul[contains(@class,'form-run')]/li",
-          teamBRunNode,
-          null,
-          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-          null
-        )
-        const bOverallResultTexts = []
-        for (let i = 0; i < bOverallResultNodes.snapshotLength; i++) {
-          bOverallResultTexts.push(
-            bOverallResultNodes.snapshotItem(i).textContent.trim()
-          )
-        }
-        extractedData.Neo.TeamBRun.Overall.Result = bOverallResultTexts.join('')
-        extractedData.Neo.TeamBRun.Overall.PPG = getText(
-          "./div[2]/div/div[contains(@class, 'form-box')]",
-          teamBRunNode
-        )
-
-        // Home
-        const bHomeResultNodes = doc.evaluate(
-          "./div[3]/div/ul[contains(@class,'form-run')]/li",
-          teamBRunNode,
-          null,
-          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-          null
-        )
-        const bHomeResultTexts = []
-        for (let i = 0; i < bHomeResultNodes.snapshotLength; i++) {
-          bHomeResultTexts.push(
-            bHomeResultNodes.snapshotItem(i).textContent.trim()
-          )
-        }
-        extractedData.Neo.TeamBRun.Home.Result = bHomeResultTexts.join('')
-        extractedData.Neo.TeamBRun.Home.PPG = getText(
-          "./div[3]/div/div[contains(@class, 'form-box')]",
-          teamBRunNode
-        )
-
-        // Away
-        const bAwayResultNodes = doc.evaluate(
-          "./div[4]/div/ul[contains(@class,'form-run')]/li",
-          teamBRunNode,
-          null,
-          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-          null
-        )
-        const bAwayResultTexts = []
-        for (let i = 0; i < bAwayResultNodes.snapshotLength; i++) {
-          bAwayResultTexts.push(
-            bAwayResultNodes.snapshotItem(i).textContent.trim()
-          )
-        }
-        extractedData.Neo.TeamBRun.Away.Result = bAwayResultTexts.join('')
-        extractedData.Neo.TeamBRun.Away.PPG = getText(
-          "./div[4]/div/div[contains(@class, 'form-box')]",
-          teamBRunNode
-        )
-      } else {
-        console.log("CSV Collector: 'Team B Run' node not found. Skipping.")
-      }
-
-      // --- Team B Table ---
-      const teamBTableNodeResult = doc.evaluate(
-        "./div[contains(@class, 'neo-team-overview')][2]/div[./div[contains(@class, 'second-table')]]",
-        neoRootNode,
-        null,
-        XPathResult.FIRST_ORDERED_NODE_TYPE,
-        null
-      )
-      const teamBTableNode = teamBTableNodeResult.singleNodeValue
-
-      if (teamBTableNode) {
-        const bXGNode = doc.evaluate(
-          "./div[./div[text() = 'xG']]",
-          teamBTableNode,
+      function extractNeoTeam(index, label) {
+        const runNode = doc.evaluate(
+          `./div[contains(@class, 'neo-team-overview')][${index}]/div[./div/div/ul[contains(@class,'form-run')]]`,
+          neoRootNode,
           null,
           XPathResult.FIRST_ORDERED_NODE_TYPE,
           null
         ).singleNodeValue
-        if (bXGNode) {
-          extractedData.Neo.TeamBTable.XG.Overall = getText('./div[2]', bXGNode)
-          extractedData.Neo.TeamBTable.XG.Home = getText('./div[3]', bXGNode)
-          extractedData.Neo.TeamBTable.XG.Away = getText('./div[4]', bXGNode)
-        }
-        const bXGANode = doc.evaluate(
-          "./div[./div[text() = 'xGA']]",
-          teamBTableNode,
+
+        const tableNode = doc.evaluate(
+          `./div[contains(@class, 'neo-team-overview')][${index}]/div[./div[contains(@class, 'second-table')]]`,
+          neoRootNode,
           null,
           XPathResult.FIRST_ORDERED_NODE_TYPE,
           null
         ).singleNodeValue
-        if (bXGANode) {
-          extractedData.Neo.TeamBTable.XGA.Overall = getText(
-            './div[2]',
-            bXGANode
-          )
-          extractedData.Neo.TeamBTable.XGA.Home = getText('./div[3]', bXGANode)
-          extractedData.Neo.TeamBTable.XGA.Away = getText('./div[4]', bXGANode)
+
+        return {
+          run: extractFormRun(runNode, label),
+          table: extractNeoTable(tableNode, label),
         }
-      } else {
-        console.log("CSV Collector: 'Team B Table' node not found. Skipping.")
       }
+
+      const neoTeamA = extractNeoTeam(1, 'Team A')
+      extractedData.Neo.TeamARun = neoTeamA.run
+      extractedData.Neo.TeamATable = neoTeamA.table
+
+      const neoTeamB = extractNeoTeam(2, 'Team B')
+      extractedData.Neo.TeamBRun = neoTeamB.run
+      extractedData.Neo.TeamBTable = neoTeamB.table
 
       // 9. Final check and swap for Neo data if needed.
       // This logic runs *after* all data has been extracted as-is.

@@ -1051,7 +1051,7 @@
       })
     }
 
-    function setupToggle(popup, toggleBtn, contentWrapper) {
+    function setupToggle(popup, header, toggleBtn, contentWrapper, resizeHandle) {
       toggleBtn.addEventListener('click', () => {
         state.isCollapsed = !state.isCollapsed
         if (state.isCollapsed) {
@@ -1059,15 +1059,15 @@
           state.originalWidth = popup.offsetWidth
           state.originalHeight = popup.offsetHeight
 
-          // Chiều rộng tối thiểu để hiển thị các nút điều khiển trên header
-          const minHeaderWidth = 350 // px
-
-          popup.style.height = `${CONSTANTS.POPUP.HEADER_HEIGHT}px`
-          popup.style.width = `${minHeaderWidth}px`
-          popup.style.minWidth = `${minHeaderWidth}px`
-          popup.style.minHeight = `${CONSTANTS.POPUP.HEADER_HEIGHT}px`
+          const collapsedWidth = 350 // px
+          const collapsedHeight = header.offsetHeight
+          popup.style.height = `${collapsedHeight}px`
+          popup.style.width = `${collapsedWidth}px`
+          popup.style.minWidth = `${collapsedWidth}px`
+          popup.style.minHeight = `${collapsedHeight}px`
 
           contentWrapper.style.display = 'none'
+          resizeHandle.style.display = 'none'
           toggleBtn.textContent = '+'
           toggleBtn.title = 'Expand'
         } else {
@@ -1082,6 +1082,7 @@
           popup.style.minWidth = `${CONSTANTS.POPUP.MIN_WIDTH}px`
 
           contentWrapper.style.display = 'flex'
+          resizeHandle.style.display = 'block'
           toggleBtn.textContent = '−'
           toggleBtn.title = 'Collapse'
         }
@@ -1534,7 +1535,7 @@
       titleContainer.appendChild(title)
 
       const controlsContainer = document.createElement('div')
-      controlsContainer.style.cssText = `display: flex; align-items: center; gap: 8px;`
+      controlsContainer.style.cssText = `display: flex; align-items: center; gap: 12px;`
 
       const refreshIndicator = document.createElement('span')
       refreshIndicator.style.cssText = `font-size: 12px; color: #e0e0e0; cursor: pointer;`
@@ -1693,7 +1694,7 @@
       setupDragAndDrop(popup, header)
       setupResize(popup, resizeHandle)
       setupAutoSizeButton(popup, autoSizeBtn)
-      setupToggle(popup, toggleBtn, contentWrapper)
+      setupToggle(popup, header, toggleBtn, contentWrapper, resizeHandle)
       setupRefreshButton(refreshButton)
       setupRefreshIndicator(refreshIndicator, header, refreshButton)
       setupSettingsInteractions(settingsBtn, settingsPanel)

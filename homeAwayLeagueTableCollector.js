@@ -140,16 +140,197 @@
     }
 
     // ==================== TABLE DATA CONFIGURATION ====================
-    // TODO: Mô tả logic trích xuất dữ liệu từ trang home-away-league-table tại đây.
-    // Hàm này cần trả về dạng mảng 2 chiều: [headers, ...rows].
+    function evaluateXPathNodes(xpath, context = document) {
+      const ownerDoc = context.ownerDocument || context
+      const result = ownerDoc.evaluate(
+        xpath,
+        context,
+        null,
+        XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+        null
+      )
+      const nodes = []
+      for (let i = 0; i < result.snapshotLength; i++) {
+        nodes.push(result.snapshotItem(i))
+      }
+      return nodes
+    }
+
+    function findCommonAncestor(nodes) {
+      if (!nodes.length) return null
+
+      const getAncestors = (node) => {
+        const ancestors = []
+        let current = node
+        while (current) {
+          ancestors.push(current)
+          current = current.parentElement
+        }
+        return ancestors
+      }
+
+      const firstAncestors = getAncestors(nodes[0])
+      return firstAncestors.find((ancestor) =>
+        nodes.every((node) => ancestor === node || ancestor.contains(node))
+      )
+    }
+
+    function getDirectChildContaining(node, tagName, root) {
+      let current = node
+      while (current && current.parentElement !== root) {
+        current = current.parentElement
+      }
+      return current && current.tagName === tagName ? current : null
+    }
+
+    function getCellText(cell) {
+      return String(cell?.textContent || '').replace(/\s+/g, ' ').trim()
+    }
+
+    function getDirectText(element) {
+      return Array.from(element?.childNodes || [])
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+    }
+
+    function getDefaultHeader(originalColumnIndex) {
+      if (originalColumnIndex === 16) return 'Thẻ'
+      if (originalColumnIndex === 17) return 'Phạt góc'
+      return `Cột ${originalColumnIndex + 1}`
+    }
+
+    function getTableHeaders(table) {
+      const headerRow = table.querySelector('thead tr') || table.querySelector('tr')
+      const cells = headerRow
+        ? Array.from(headerRow.children).filter((cell) =>
+            /^(TH|TD)$/.test(cell.tagName)
+          )
+        : []
+
+      return cells.slice(2).map((cell, index) => {
+        return getDirectText(cell) || getDefaultHeader(index + 2)
+      })
+    }
+
+    function getTableCellValue(cell, originalColumnIndex) {
+      if (originalColumnIndex === 11) {
+        return Array.from(cell.querySelectorAll('li a'))
+          .map(getCellText)
+          .filter(Boolean)
+          .join(' ')
+      }
+
+      return getCellText(cell)
+    }
+
+    function extractRowsFromTable(table) {
+      const bodyRows = table.tBodies.length
+        ? Array.from(table.tBodies).flatMap((tbody) => Array.from(tbody.rows))
+        : Array.from(table.rows).slice(1)
+
+      return bodyRows
+        .map((tr) => {
+          const cells = Array.from(tr.children).filter((cell) =>
+            /^(TH|TD)$/.test(cell.tagName)
+          )
+          const dataCells = cells.slice(2)
+          const teamId = dataCells[0]
+            ?.querySelector('a[data-team-id]')
+            ?.getAttribute('data-team-id')
+            ?.trim()
+
+          if (!teamId) return null
+
+          return {
+            teamId,
+            values: dataCells.map((cell, index) =>
+              getTableCellValue(cell, index + 2)
+            ),
+          }
+        })
+        .filter(Boolean)
+    }
+
+    // Trích xuất dữ liệu từ các bảng full-league-table, nối ngang theo data-team-id.
     function extractHomeAwayLeagueTableData(doc = document) {
-      const headers = ['Status']
-      const rows = [
-        [
-          'TODO: bổ sung logic trích xuất dữ liệu từ nội dung trang home-away-league-table',
-        ],
-      ]
-      return [headers, ...rows]
+      const tables = evaluateXPathNodes(
+        "//table[contains(@class,'full-league-table')]",
+        doc
+      )
+      if (!tables.length) return [['Status'], ['No full-league-table found.']]
+
+      const dataRoot = findCommonAncestor(tables)
+      if (!dataRoot) return [['Status'], ['Data root not found.']]
+
+      const sections = []
+      const usedTables = new Set()
+      const directChildren = Array.from(dataRoot.children)
+
+      for (let i = 0; i < directChildren.length; i++) {
+        const h2 = directChildren[i]
+        if (h2.tagName !== 'H2') continue
+
+        const content = directChildren[i + 1]
+        const table = content?.querySelector?.('table.full-league-table')
+        if (!table) continue
+
+        usedTables.add(table)
+        sections.push({
+          title: getCellText(h2),
+          table,
+        })
+      }
+
+      // Fallback nếu DOM có wrapper khác với mô tả: vẫn lấy h2/direct div gần nhất của từng table.
+      tables.forEach((table) => {
+        if (usedTables.has(table)) return
+        const tableWrapper = getDirectChildContaining(table, 'DIV', dataRoot)
+        const tableIndex = tableWrapper ? directChildren.indexOf(tableWrapper) : -1
+        const h2 = tableIndex > 0 ? directChildren[tableIndex - 1] : null
+        sections.push({
+          title: h2?.tagName === 'H2' ? getCellText(h2) : '',
+          table,
+        })
+      })
+
+      const headers = ['Team ID']
+      const headerGroups = [{ title: '', colspan: 1 }]
+      const rowsByTeamId = new Map()
+
+      sections.forEach(({ title, table }) => {
+        const sectionHeaders = getTableHeaders(table)
+        const sectionStartIndex = headers.length - 1
+        headers.push(...sectionHeaders)
+        headerGroups.push({ title, colspan: sectionHeaders.length })
+
+        extractRowsFromTable(table).forEach(({ teamId, values }) => {
+          if (!rowsByTeamId.has(teamId)) {
+            rowsByTeamId.set(teamId, Array(headers.length - 1).fill(''))
+          }
+
+          const row = rowsByTeamId.get(teamId)
+          while (row.length < headers.length - 1) row.push('')
+          values.forEach((value, index) => {
+            row[sectionStartIndex + index] = value
+          })
+        })
+
+        rowsByTeamId.forEach((row) => {
+          while (row.length < headers.length - 1) row.push('')
+        })
+      })
+
+      const rows = Array.from(rowsByTeamId.entries()).map(([teamId, values]) => [
+        teamId,
+        ...values,
+      ])
+
+      const result = [headers, ...rows]
+      result.headerGroups = headerGroups
+      return result
     }
 
     // ==================== UTILITY FUNCTIONS ====================
@@ -210,10 +391,9 @@
           return
         }
 
-        const headerRow = document.createElement('tr')
-        headers.forEach((headerText, index) => {
+        const createHeaderCell = (headerText, fallbackText, top = '0') => {
           const th = document.createElement('th')
-          th.textContent = headerText || `Cột ${index + 1}`
+          th.textContent = headerText || fallbackText
           th.style.cssText = `
             border: 1px solid ${CONSTANTS.COLORS.BORDER};
             padding: 8px;
@@ -221,8 +401,32 @@
             font-weight: bold;
             text-align: left;
             position: sticky;
-            top: 0;
+            top: ${top};
           `
+          return th
+        }
+
+        const headerGroups = Array.isArray(data.headerGroups)
+          ? data.headerGroups
+          : null
+        if (headerGroups) {
+          const groupRow = document.createElement('tr')
+          headerGroups.forEach((group) => {
+            const th = createHeaderCell(group.title || '', '', '0')
+            th.colSpan = group.colspan || 1
+            th.style.textAlign = 'center'
+            groupRow.appendChild(th)
+          })
+          thead.appendChild(groupRow)
+        }
+
+        const headerRow = document.createElement('tr')
+        headers.forEach((headerText, index) => {
+          const th = createHeaderCell(
+            headerText,
+            `Cột ${index + 1}`,
+            headerGroups ? '35px' : '0'
+          )
           headerRow.appendChild(th)
         })
         thead.appendChild(headerRow)

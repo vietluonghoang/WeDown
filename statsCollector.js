@@ -102,6 +102,9 @@
           visibleExtraColumns: Array.isArray(parsed.visibleExtraColumns)
             ? parsed.visibleExtraColumns.filter((value) => typeof value === 'string')
             : null,
+          selectedLeagues: Array.isArray(parsed.selectedLeagues)
+            ? parsed.selectedLeagues.filter((value) => typeof value === 'string')
+            : null,
           dateTimeMode: parsed.dateTimeMode === 'gmt' ? 'gmt' : 'local',
         }
       } catch (_) {
@@ -112,6 +115,7 @@
           requestDelay: 3,
           visibleColumns: null,
           visibleExtraColumns: null,
+          selectedLeagues: null,
           dateTimeMode: 'local',
         }
       }
@@ -155,6 +159,7 @@
     // ==================== CSV COLUMN CONFIGURATION ====================
     const CSV_COLUMNS = {
       DATE_GMT: 1,
+      LEAGUE: 3,
       HOME_TEAM: 4,
       AWAY_TEAM: 5,
       MATCH_URL: 106,
@@ -222,6 +227,32 @@
     function rebuildExtraHeadersFromCache() {
       state.extraHeaders = []
       state.extraDataByUrl.forEach((extraData) => registerExtraHeaders(extraData))
+    }
+
+    function normalizeLeague(value) {
+      return String(value || '').trim()
+    }
+
+    function getFilteredDataRows(data) {
+      const rows = data.slice(1)
+      if (!Array.isArray(settings.selectedLeagues)) return rows
+
+      const selectedLeagues = new Set(settings.selectedLeagues.map(normalizeLeague))
+      if (selectedLeagues.size === 0) return rows
+
+      return rows.filter((row) =>
+        selectedLeagues.has(normalizeLeague(row[CSV_COLUMNS.LEAGUE]))
+      )
+    }
+
+    function scheduleVisibleRowsProcessing(delayMs = 100) {
+      setTimeout(
+        () =>
+          withRefreshSuspended(() =>
+            processTableRowsForUrls(window.csvCollectorTbody)
+          ),
+        delayMs
+      )
     }
 
     function formatCsvCellValue(colIndex, value) {
@@ -487,6 +518,7 @@
         }
 
         updateColumnSettingsPanel(headers)
+        updateLeagueFilterPanel(data)
 
         // Create header row
         const headerRow = document.createElement('tr')
@@ -532,7 +564,7 @@
         thead.appendChild(headerRow)
 
         // Create data rows
-        const dataRows = data.slice(1)
+        const dataRows = getFilteredDataRows(data)
         dataRows.forEach((rowData) => {
           const tr = document.createElement('tr')
           tr.dataset.homeTeam = rowData[CSV_COLUMNS.HOME_TEAM] ?? ''
@@ -642,12 +674,18 @@
      * @param {HTMLElement} tbody - Phần thân của bảng chứa các dòng dữ liệu.
      */
     async function processTableRowsForUrls(tbody) {
+      if (!tbody) return
       // Thêm một log để debug dễ hơn, cho biết quá trình bắt đầu
       console.log('CSV Collector: Starting processTableRowsForUrls...')
       window.logToPopup('Starting to process rows for additional data...')
       const rows = tbody.querySelectorAll('tr')
       window.logToPopup(`Found ${rows.length} rows to process.`)
       for (const row of rows) {
+        if (tbody !== window.csvCollectorTbody || !row.isConnected) {
+          window.logToPopup('URL processing stopped because visible rows changed.')
+          break
+        }
+
         // Check for cancellation signal at the start of each iteration
         if (state.cancelProcessing) {
           window.logToPopup('URL processing was cancelled by the user.')
@@ -696,6 +734,10 @@
                 await delay(timeToWait)
               }
             }
+            if (tbody !== window.csvCollectorTbody || !row.isConnected) {
+              window.logToPopup('URL processing stopped because visible rows changed.')
+              break
+            }
             // Mark the start time of the new request
             state.lastRequestStartTime = Date.now()
 
@@ -710,6 +752,10 @@
               homeTeamNameCsv,
               awayTeamNameCsv
             )
+            if (tbody !== window.csvCollectorTbody || !row.isConnected) {
+              window.logToPopup('URL result ignored because visible rows changed.')
+              break
+            }
             updateTableRowWithExtraData(row, {
               status: 'success',
               data: extraData,
@@ -978,13 +1024,7 @@
           updateTableWithData(csvData, window.csvCollectorTbody, force)
           // Bắt đầu xử lý các dòng trong bảng, tạm dừng refresh trong khi thực hiện.
           // Việc này được gọi ở đây để đảm bảo nó chạy cho cả refresh tự động và thủ công.
-          setTimeout(
-            () =>
-              withRefreshSuspended(() =>
-                processTableRowsForUrls(window.csvCollectorTbody)
-              ),
-            500
-          )
+          scheduleVisibleRowsProcessing(500)
         }
 
         const recordCount = csvData.length > 1 ? csvData.length - 1 : 0
@@ -1323,21 +1363,90 @@
       applyFilter()
     }
 
+    function updateLeagueFilterPanel(data = []) {
+      if (!window.csvCollectorSettingsPanel || !data || data.length === 0) return
+
+      const panel = window.csvCollectorSettingsPanel
+      const list = panel._leagueList
+      const searchInput = panel._leagueSearch
+      if (!list || !searchInput) return
+
+      const counts = new Map()
+      data.slice(1).forEach((row) => {
+        const league = normalizeLeague(row[CSV_COLUMNS.LEAGUE]) || '(blank)'
+        counts.set(league, (counts.get(league) || 0) + 1)
+      })
+
+      const leagues = Array.from(counts.keys()).sort((a, b) =>
+        a.localeCompare(b)
+      )
+      const selectedLeagues = Array.isArray(settings.selectedLeagues)
+        ? new Set(settings.selectedLeagues.map(normalizeLeague))
+        : null
+
+      list.innerHTML = ''
+      if (leagues.length === 0) {
+        list.textContent = 'Load CSV to show leagues.'
+        return
+      }
+
+      leagues.forEach((league) => {
+        const label = document.createElement('label')
+        label.dataset.searchText = league.toLowerCase()
+        label.style.cssText =
+          'display:flex; align-items:center; gap:6px; padding:2px 0; cursor:pointer;'
+
+        const checkbox = document.createElement('input')
+        checkbox.type = 'checkbox'
+        checkbox.value = league
+        checkbox.checked = !selectedLeagues || selectedLeagues.has(league)
+
+        const text = document.createElement('span')
+        text.textContent = `${league} (${counts.get(league)})`
+
+        label.appendChild(checkbox)
+        label.appendChild(text)
+        list.appendChild(label)
+      })
+
+      const applyFilter = () => {
+        const query = searchInput.value.trim().toLowerCase()
+        list.querySelectorAll('label').forEach((label) => {
+          label.style.display = label.dataset.searchText.includes(query)
+            ? 'flex'
+            : 'none'
+        })
+      }
+
+      searchInput.oninput = applyFilter
+      applyFilter()
+    }
+
+    function createSettingsBackdrop() {
+      const backdrop = document.createElement('div')
+      backdrop.style.cssText = `position: fixed; inset: 0; z-index: ${
+        CONSTANTS.Z_INDEX + 1
+      }; background: rgba(0,0,0,0.08); display: none;`
+      return backdrop
+    }
+
     function createSettingsPanel() {
       const panel = document.createElement('div')
       panel.style.cssText = `
-        position: absolute; top: ${
-          CONSTANTS.POPUP.HEADER_HEIGHT + 4
-        }px; left: 8px; background: white;
+        position: fixed; top: 60px; left: 20px; background: white;
         border: 1px solid ${
           CONSTANTS.COLORS.BORDER
-        }; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-        border-radius: 4px; z-index: ${CONSTANTS.Z_INDEX}; min-width: 320px;
+        }; box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+        border-radius: 4px; z-index: ${CONSTANTS.Z_INDEX + 2}; width: min(760px, calc(100vw - 40px));
         max-height: calc(100vh - 120px); overflow: hidden; flex-direction: column;
         display: none; font-size: 12px;`
 
       const panelBody = document.createElement('div')
       panelBody.style.cssText = 'padding: 10px; overflow: auto; min-height: 0;'
+
+      const sectionGrid = document.createElement('div')
+      sectionGrid.style.cssText =
+        'display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start;'
 
       const field = (labelText, initValue, id) => {
         const row = document.createElement('div')
@@ -1405,6 +1514,37 @@
       dateModeRow.appendChild(dateModeSelect)
       panelBody.appendChild(dateModeRow)
 
+      const leagueSection = document.createElement('div')
+      leagueSection.style.cssText = `margin-top: 10px; padding-top: 8px; border-top: 1px solid ${CONSTANTS.COLORS.BORDER};`
+      const leagueTitle = document.createElement('div')
+      leagueTitle.textContent = 'League filter'
+      leagueTitle.style.cssText = 'font-weight: bold; margin-bottom: 6px;'
+      const leagueSearch = document.createElement('input')
+      leagueSearch.type = 'search'
+      leagueSearch.placeholder = 'Search league...'
+      leagueSearch.style.cssText =
+        'width: 100%; box-sizing: border-box; padding: 3px 5px; margin-bottom: 6px;'
+
+      const leagueActions = document.createElement('div')
+      leagueActions.style.cssText =
+        'display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap;'
+      const leagueSelectAll = document.createElement('button')
+      leagueSelectAll.textContent = 'All'
+      const leagueClearFilter = document.createElement('button')
+      leagueClearFilter.textContent = 'Clear filter'
+      leagueActions.appendChild(leagueSelectAll)
+      leagueActions.appendChild(leagueClearFilter)
+
+      const leagueList = document.createElement('div')
+      leagueList.style.cssText = `max-height: 150px; overflow: auto; border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 6px; background: #fff;`
+      leagueList.textContent = 'Load CSV to show leagues.'
+
+      leagueSection.appendChild(leagueTitle)
+      leagueSection.appendChild(leagueSearch)
+      leagueSection.appendChild(leagueActions)
+      leagueSection.appendChild(leagueList)
+      sectionGrid.appendChild(leagueSection)
+
       const columnSection = document.createElement('div')
       columnSection.style.cssText = `margin-top: 10px; padding-top: 8px; border-top: 1px solid ${CONSTANTS.COLORS.BORDER};`
       const columnTitle = document.createElement('div')
@@ -1430,14 +1570,14 @@
       columnActions.appendChild(clearColumns)
 
       const columnList = document.createElement('div')
-      columnList.style.cssText = `max-height: 220px; overflow: auto; border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 6px; background: #fff;`
+      columnList.style.cssText = `max-height: 150px; overflow: auto; border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 6px; background: #fff;`
       columnList.textContent = 'Load CSV to show columns.'
 
       columnSection.appendChild(columnTitle)
       columnSection.appendChild(columnSearch)
       columnSection.appendChild(columnActions)
       columnSection.appendChild(columnList)
-      panelBody.appendChild(columnSection)
+      sectionGrid.appendChild(columnSection)
 
       const extraColumnSection = document.createElement('div')
       extraColumnSection.style.cssText = `margin-top: 10px; padding-top: 8px; border-top: 1px solid ${CONSTANTS.COLORS.BORDER};`
@@ -1461,14 +1601,15 @@
       extraColumnActions.appendChild(extraClearColumns)
 
       const extraColumnList = document.createElement('div')
-      extraColumnList.style.cssText = `max-height: 220px; overflow: auto; border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 6px; background: #fff;`
+      extraColumnList.style.cssText = `max-height: 150px; overflow: auto; border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 6px; background: #fff;`
       extraColumnList.textContent = 'Process URLs to show runtime columns.'
 
       extraColumnSection.appendChild(extraColumnTitle)
       extraColumnSection.appendChild(extraColumnSearch)
       extraColumnSection.appendChild(extraColumnActions)
       extraColumnSection.appendChild(extraColumnList)
-      panelBody.appendChild(extraColumnSection)
+      sectionGrid.appendChild(extraColumnSection)
+      panelBody.appendChild(sectionGrid)
       panel.appendChild(panelBody)
 
       const actions = document.createElement('div')
@@ -1490,22 +1631,48 @@
         clearColumns,
         extraSelectAll,
         extraClearColumns,
+        leagueSelectAll,
+        leagueClearFilter,
       }
       panel._columnList = columnList
       panel._columnSearch = columnSearch
       panel._extraColumnList = extraColumnList
       panel._extraColumnSearch = extraColumnSearch
+      panel._leagueList = leagueList
+      panel._leagueSearch = leagueSearch
       return panel
     }
 
-    function setupSettingsInteractions(settingsBtn, panel) {
-      const close = () => (panel.style.display = 'none')
-      settingsBtn.addEventListener(
-        'click',
-        () =>
-          (panel.style.display =
-            panel.style.display === 'none' ? 'flex' : 'none')
-      )
+    function positionSettingsPanel(panel, popup) {
+      const width = Math.min(760, window.innerWidth - 40)
+      const maxHeight = Math.max(160, window.innerHeight - 40)
+      const left = Math.max(20, (window.innerWidth - width) / 2)
+      const top = Math.max(20, (window.innerHeight - maxHeight) / 2)
+
+      panel.style.width = `${width}px`
+      panel.style.left = `${left}px`
+      panel.style.top = `${top}px`
+      panel.style.maxHeight = `${maxHeight}px`
+    }
+
+    function setupSettingsInteractions(settingsBtn, panel, popup, backdrop) {
+      const close = () => {
+        panel.style.display = 'none'
+        backdrop.style.display = 'none'
+      }
+      settingsBtn.addEventListener('click', () => {
+        if (panel.style.display === 'none') {
+          positionSettingsPanel(panel, popup)
+          backdrop.style.display = 'block'
+          panel.style.display = 'flex'
+        } else {
+          close()
+        }
+      })
+      backdrop.addEventListener('click', close)
+      window.addEventListener('resize', () => {
+        if (panel.style.display !== 'none') positionSettingsPanel(panel, popup)
+      })
       panel._buttons.cancel.addEventListener('click', close)
       panel._buttons.selectAll.addEventListener('click', () => {
         panel._columnList
@@ -1543,6 +1710,21 @@
           .forEach((checkbox) => {
             checkbox.checked = false
           })
+      })
+      panel._buttons.leagueSelectAll.addEventListener('click', () => {
+        panel._leagueList
+          .querySelectorAll("input[type='checkbox']")
+          .forEach((checkbox) => {
+            checkbox.checked = true
+          })
+      })
+      panel._buttons.leagueClearFilter.addEventListener('click', () => {
+        panel._leagueList
+          .querySelectorAll("input[type='checkbox']")
+          .forEach((checkbox) => {
+            checkbox.checked = false
+          })
+        settings.selectedLeagues = null
       })
       panel._buttons.save.addEventListener('click', () => {
         const newNoData = parseFloat(panel._inputs.noData.input.value)
@@ -1583,14 +1765,31 @@
           settings.visibleExtraColumns = selectedExtraColumns
         }
 
+        const leagueCheckboxes = Array.from(
+          panel._leagueList.querySelectorAll("input[type='checkbox']")
+        )
+        if (leagueCheckboxes.length) {
+          const selectedLeagues = leagueCheckboxes
+            .filter((checkbox) => checkbox.checked)
+            .map((checkbox) => checkbox.value)
+          settings.selectedLeagues =
+            selectedLeagues.length === 0 ||
+            selectedLeagues.length === leagueCheckboxes.length
+              ? null
+              : selectedLeagues
+        }
+
         saveSettings(settings)
 
         if (window.csvCollectorLastCsvData && window.csvCollectorTbody) {
+          state.cancelProcessing = true
           updateTableWithData(
             window.csvCollectorLastCsvData,
             window.csvCollectorTbody,
             true
           )
+          state.cancelProcessing = false
+          scheduleVisibleRowsProcessing(100)
         }
 
         // Only update intervals if not processing URLs in the background
@@ -1788,13 +1987,14 @@
       const resizeHandle = document.createElement('div')
       resizeHandle.style.cssText = `position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: se-resize; z-index: 1; background: linear-gradient(135deg, transparent 50%, rgba(0,0,0,0.25) 50%);`
 
+      const settingsBackdrop = createSettingsBackdrop()
       const settingsPanel = createSettingsPanel()
+      window.csvCollectorSettingsBackdrop = settingsBackdrop
       window.csvCollectorSettingsPanel = settingsPanel
 
       popup.appendChild(header)
       popup.appendChild(contentWrapper)
       popup.appendChild(resizeHandle)
-      popup.appendChild(settingsPanel)
 
       // Store references on window
       window.csvCollectorTbody = table.querySelector('tbody')
@@ -1820,7 +2020,7 @@
       setupToggle(popup, header, toggleBtn, contentWrapper, resizeHandle)
       setupRefreshButton(refreshButton)
       setupRefreshIndicator(refreshIndicator, header, refreshButton)
-      setupSettingsInteractions(settingsBtn, settingsPanel)
+      setupSettingsInteractions(settingsBtn, settingsPanel, popup, settingsBackdrop)
 
       state.originalHeight = popup.offsetHeight
       return popup
@@ -1831,6 +2031,12 @@
       try {
         const popup = createFloatingPopup()
         document.body.appendChild(popup)
+        if (window.csvCollectorSettingsBackdrop) {
+          document.body.appendChild(window.csvCollectorSettingsBackdrop)
+        }
+        if (window.csvCollectorSettingsPanel) {
+          document.body.appendChild(window.csvCollectorSettingsPanel)
+        }
         window.logToPopup('CSV Collector initialized.')
 
         refreshData()

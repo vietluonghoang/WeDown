@@ -92,6 +92,9 @@
             Number(parsed.dataFoundInterval) > 0
               ? Number(parsed.dataFoundInterval)
               : CONSTANTS.REFRESH.DATA_FOUND_INTERVAL,
+          visibleColumns: Array.isArray(parsed.visibleColumns)
+            ? parsed.visibleColumns.filter((value) => typeof value === 'string')
+            : null,
 
         }
       } catch (_) {
@@ -99,6 +102,7 @@
           defaultInterval: CONSTANTS.REFRESH.DEFAULT_INTERVAL,
           noDataInterval: CONSTANTS.REFRESH.NO_DATA_INTERVAL,
           dataFoundInterval: CONSTANTS.REFRESH.DATA_FOUND_INTERVAL,
+          visibleColumns: null,
 
         }
       }
@@ -226,6 +230,46 @@
       return getCellText(cell)
     }
 
+    function getVisibleColumnKeys(columnMeta = []) {
+      const allKeys = columnMeta.map((column) => column.key)
+      if (!Array.isArray(settings.visibleColumns)) return allKeys
+
+      const selected = settings.visibleColumns.filter((key) =>
+        allKeys.includes(key)
+      )
+      return selected.length ? selected : allKeys
+    }
+
+    function filterExtractedDataColumns(data) {
+      const columnMeta = Array.isArray(data.columnMeta) ? data.columnMeta : []
+      if (!columnMeta.length) return data
+
+      const visibleKeys = new Set(getVisibleColumnKeys(columnMeta))
+      const visibleIndexes = columnMeta
+        .map((column, index) => ({ column, index }))
+        .filter(({ column }) => visibleKeys.has(column.key))
+        .map(({ index }) => index)
+
+      const filtered = data.map((row) => visibleIndexes.map((index) => row[index]))
+      filtered.columnMeta = visibleIndexes.map((index) => columnMeta[index])
+      filtered.headerGroups = buildHeaderGroups(filtered.columnMeta)
+      return filtered
+    }
+
+    function buildHeaderGroups(columnMeta = []) {
+      const groups = []
+      columnMeta.forEach((column) => {
+        const title = column.groupTitle || ''
+        const last = groups[groups.length - 1]
+        if (last && last.title === title) {
+          last.colspan++
+        } else {
+          groups.push({ title, colspan: 1 })
+        }
+      })
+      return groups
+    }
+
     function extractRowsFromTable(table) {
       const bodyRows = table.tBodies.length
         ? Array.from(table.tBodies).flatMap((tbody) => Array.from(tbody.rows))
@@ -297,14 +341,28 @@
       })
 
       const headers = ['Team ID']
-      const headerGroups = [{ title: '', colspan: 1 }]
+      const columnMeta = [
+        {
+          key: 'team-id',
+          groupTitle: '',
+          header: 'Team ID',
+          required: true,
+        },
+      ]
       const rowsByTeamId = new Map()
 
-      sections.forEach(({ title, table }) => {
+      sections.forEach(({ title, table }, sectionIndex) => {
         const sectionHeaders = getTableHeaders(table)
         const sectionStartIndex = headers.length - 1
         headers.push(...sectionHeaders)
-        headerGroups.push({ title, colspan: sectionHeaders.length })
+        sectionHeaders.forEach((header, columnIndex) => {
+          columnMeta.push({
+            key: `${sectionIndex}:${columnIndex}`,
+            groupTitle: title,
+            header,
+            required: sectionIndex === 0 && columnIndex === 0,
+          })
+        })
 
         extractRowsFromTable(table).forEach(({ teamId, values }) => {
           if (!rowsByTeamId.has(teamId)) {
@@ -329,7 +387,8 @@
       ])
 
       const result = [headers, ...rows]
-      result.headerGroups = headerGroups
+      result.columnMeta = columnMeta
+      result.headerGroups = buildHeaderGroups(columnMeta)
       return result
     }
 
@@ -406,6 +465,17 @@
           return th
         }
 
+        const markGroupBoundaries = (cells, groups) => {
+          if (!groups) return
+          let offset = 0
+          groups.forEach((group, groupIndex) => {
+            if (groupIndex > 0 && cells[offset]) {
+              cells[offset].style.borderLeft = '3px solid #495057'
+            }
+            offset += group.colspan || 1
+          })
+        }
+
         const headerGroups = Array.isArray(data.headerGroups)
           ? data.headerGroups
           : null
@@ -415,6 +485,8 @@
             const th = createHeaderCell(group.title || '', '', '0')
             th.colSpan = group.colspan || 1
             th.style.textAlign = 'center'
+            th.style.borderLeft = '3px solid #495057'
+            th.style.borderRight = '3px solid #495057'
             groupRow.appendChild(th)
           })
           thead.appendChild(groupRow)
@@ -429,6 +501,7 @@
           )
           headerRow.appendChild(th)
         })
+        markGroupBoundaries(Array.from(headerRow.children), headerGroups)
         thead.appendChild(headerRow)
 
         data.slice(1).forEach((rowData) => {
@@ -436,6 +509,7 @@
           headers.forEach((_, index) => {
             tr.appendChild(createTableCell(rowData[index] ?? ''))
           })
+          markGroupBoundaries(Array.from(tr.children), headerGroups)
           tbody.appendChild(tr)
         })
 
@@ -539,7 +613,10 @@
         state.isRefreshing = true
         window.logToPopup('Refreshing data from current page...')
 
-        const pageData = extractHomeAwayLeagueTableData(document)
+        const rawPageData = extractHomeAwayLeagueTableData(document)
+        window.homeAwayTableCollectorRawData = rawPageData
+        updateColumnSettingsPanel(rawPageData)
+        const pageData = filterExtractedDataColumns(rawPageData)
         window.homeAwayTableCollectorLastData = pageData
 
         if (window.csvCollectorTbody) {
@@ -785,7 +862,60 @@
       })
     }
 
-    function updateColumnSettingsPanel(headers = []) {
+    function updateColumnSettingsPanel(data = window.homeAwayTableCollectorRawData) {
+      if (!window.csvCollectorSettingsPanel || !data) return
+
+      const panel = window.csvCollectorSettingsPanel
+      const list = panel._columnList
+      const searchInput = panel._columnSearch
+      if (!list || !searchInput) return
+
+      const columnMeta = Array.isArray(data.columnMeta) ? data.columnMeta : []
+      const selectedKeys = new Set(getVisibleColumnKeys(columnMeta))
+      list.innerHTML = ''
+
+      if (!columnMeta.length) {
+        list.textContent = 'Refresh data to show columns.'
+        return
+      }
+
+      columnMeta.forEach((column, index) => {
+        const label = document.createElement('label')
+        const groupTitle = column.groupTitle || 'General'
+        label.dataset.searchText = `${index + 1} ${groupTitle} ${column.header}`.toLowerCase()
+        label.style.cssText =
+          'display:flex; align-items:center; gap:6px; padding:2px 0; cursor:pointer;'
+
+        const checkbox = document.createElement('input')
+        checkbox.type = 'checkbox'
+        checkbox.value = column.key
+        checkbox.checked = column.required || selectedKeys.has(column.key)
+        checkbox.disabled = !!column.required
+
+        const text = document.createElement('span')
+        text.textContent = `${groupTitle} / ${column.header}${
+          column.required ? ' (fixed)' : ''
+        }`
+
+        label.appendChild(checkbox)
+        label.appendChild(text)
+        list.appendChild(label)
+      })
+
+      const applyFilter = () => {
+        const query = searchInput.value.trim().toLowerCase()
+        list.querySelectorAll('label').forEach((label) => {
+          label.style.display = label.dataset.searchText.includes(query)
+            ? 'flex'
+            : 'none'
+        })
+      }
+
+      searchInput.oninput = applyFilter
+      applyFilter()
+    }
+
+    function updateLegacyColumnSettingsPanel(headers = []) {
       if (!window.csvCollectorSettingsPanel) return
 
       const panel = window.csvCollectorSettingsPanel
@@ -986,6 +1116,37 @@
       panelBody.appendChild(noData.row)
       panelBody.appendChild(hasData.row)
       panelBody.appendChild(defInt.row)
+
+      const columnSection = document.createElement('div')
+      columnSection.style.cssText = `margin-top: 10px; padding-top: 8px; border-top: 1px solid ${CONSTANTS.COLORS.BORDER};`
+      const columnTitle = document.createElement('div')
+      columnTitle.textContent = 'Visible columns'
+      columnTitle.style.cssText = 'font-weight: bold; margin-bottom: 6px;'
+      const columnSearch = document.createElement('input')
+      columnSearch.type = 'search'
+      columnSearch.placeholder = 'Search column...'
+      columnSearch.style.cssText =
+        'width: 100%; box-sizing: border-box; padding: 3px 5px; margin-bottom: 6px;'
+
+      const columnActions = document.createElement('div')
+      columnActions.style.cssText =
+        'display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap;'
+      const selectAll = document.createElement('button')
+      selectAll.textContent = 'All'
+      const clearColumns = document.createElement('button')
+      clearColumns.textContent = 'Clear'
+      columnActions.appendChild(selectAll)
+      columnActions.appendChild(clearColumns)
+
+      const columnList = document.createElement('div')
+      columnList.style.cssText = `max-height: 260px; overflow: auto; border: 1px solid ${CONSTANTS.COLORS.BORDER}; padding: 6px; background: #fff;`
+      columnList.textContent = 'Refresh data to show columns.'
+
+      columnSection.appendChild(columnTitle)
+      columnSection.appendChild(columnSearch)
+      columnSection.appendChild(columnActions)
+      columnSection.appendChild(columnList)
+      panelBody.appendChild(columnSection)
       panel.appendChild(panelBody)
 
       const actions = document.createElement('div')
@@ -999,7 +1160,9 @@
       panel.appendChild(actions)
 
       panel._inputs = { noData, hasData, defInt }
-      panel._buttons = { cancel, save }
+      panel._buttons = { cancel, save, selectAll, clearColumns }
+      panel._columnList = columnList
+      panel._columnSearch = columnSearch
       return panel
     }
 
@@ -1034,6 +1197,22 @@
         if (panel.style.display !== 'none') positionSettingsPanel(panel, popup)
       })
       panel._buttons.cancel.addEventListener('click', close)
+      panel._buttons.selectAll.addEventListener('click', () => {
+        settings.visibleColumns = null
+        updateColumnSettingsPanel(window.homeAwayTableCollectorRawData)
+        panel._columnList
+          .querySelectorAll("input[type='checkbox']")
+          .forEach((checkbox) => {
+            checkbox.checked = true
+          })
+      })
+      panel._buttons.clearColumns.addEventListener('click', () => {
+        panel._columnList
+          .querySelectorAll("input[type='checkbox']")
+          .forEach((checkbox) => {
+            checkbox.checked = checkbox.disabled
+          })
+      })
       panel._buttons.save.addEventListener('click', () => {
         const newNoData = parseFloat(panel._inputs.noData.input.value)
         if (!isNaN(newNoData)) settings.noDataInterval = Math.max(0.5, newNoData)
@@ -1044,11 +1223,23 @@
         const newDefInt = parseFloat(panel._inputs.defInt.input.value)
         if (!isNaN(newDefInt)) settings.defaultInterval = Math.max(0.5, newDefInt)
 
+        const selectedColumns = Array.from(
+          panel._columnList.querySelectorAll("input[type='checkbox']:checked")
+        ).map((checkbox) => checkbox.value)
+        if (panel._columnList.querySelectorAll("input[type='checkbox']").length) {
+          settings.visibleColumns = selectedColumns
+        }
+
         saveSettings(settings)
 
-        if (window.homeAwayTableCollectorLastData && window.csvCollectorTbody) {
+        if (window.homeAwayTableCollectorRawData && window.csvCollectorTbody) {
+          updateColumnSettingsPanel(window.homeAwayTableCollectorRawData)
+          const visibleData = filterExtractedDataColumns(
+            window.homeAwayTableCollectorRawData
+          )
+          window.homeAwayTableCollectorLastData = visibleData
           updateTableWithData(
-            window.homeAwayTableCollectorLastData,
+            visibleData,
             window.csvCollectorTbody,
             true
           )

@@ -2,1087 +2,607 @@
 // ==UserScript==
 // @name         Get Facebook Video Link
 // @namespace    http://tampermonkey.net/
-// @version      0.1.8
-// @description  Simply get the downloadable video facebooklink from the page source
+// @version      0.2.0
+// @description  Fast Facebook video extractor using DOM, React Fiber and GraphQL network capture
 // @author       Viet Cat
 // @match        https://www.facebook.com/*
+// @match        https://web.facebook.com/*
 // @grant        none
+// @run-at       document-idle
+// @noframes
 // ==/UserScript==
 
-var findPlayVideoInterval;
-var videoDownloadPanel;
-var videoLinksPanel;
-var infoPanel;
-var rawVideoLinks = new Map();
-var hasStarted = false;
-let topOffset;
-let leftOffset;
-let videoDownloadPanelId = "pnlVidDnl";
-let videoLinksPanelId = "pnlVidLk";
-let infoPanelID = "pnlInfo";
-let observer;
+;(function () {
+  'use strict'
 
-// Add near the top with other variables
-const CONFIG = {
-    enableConsoleLog: true,
-    enableUILog: true,
-    debugMode: false
-};
+  const PANEL_ID = 'pnlVidDnl'
+  const LINKS_ID = 'pnlVidLk'
+  const INFO_ID = 'pnlInfo'
+  const STATUS_ID = 'pnlVidStatus'
+  const MAX_LOG_LINES = 5000
+  const SCAN_DEBOUNCE_MS = 800
+  const FIBER_MAX_DEPTH = 5
+  const FIBER_MAX_ANCESTORS = 40
 
-// Add these constants for regex patterns
-const VIDEO_PATTERNS = {
-    HD: /,{"progressive_url":"(.*?)","failure_reason":(.*?),"metadata":{"quality":"HD"}/g,
-    SD: /\[{"progressive_url":"(.*?)","failure_reason":(.*?),"metadata":{"quality":"SD"}/g,
-    RESOLUTION: /(?<="base_url":)(.*?)(\])/g
-};
+  const state = {
+    links: new Map(),
+    candidates: new Map(),
+    scanning: false,
+    autoScan: true,
+    observer: null,
+    scanTimer: null,
+    logLines: [],
+  }
 
-// Add to the top with other constants
-const INTERVALS = {
-    DEFAULT: 2000,  // 2 seconds
-    AFTER_FOUND: 30000  // 30 seconds
-};
+  const NetCapture = {
+    captured: new Map(),
+    thumbToVideoId: new Map(),
+    installed: false,
 
-// Add near the top with other constants
-const DEBOUNCE_DELAY = 100;
+    install() {
+      if (this.installed) return
+      this.installed = true
+      this.interceptFetch()
+      this.interceptXHR()
+      log('Network capture installed')
+    },
 
-// Add near the top with other constants
-const RATE_LIMIT = {
-    MAX_CONCURRENT_DOWNLOADS: 3,
-    COOLDOWN_PERIOD: 2000 // 2 seconds
-};
+    getVideosForId(videoId) {
+      const urls = this.captured.get(videoId)
+      return urls ? [...urls] : []
+    },
 
-// Add to the top with other constants
-const LOADING_STATES = {
-    DOTS_COUNT: 3,
-    INTERVAL: 500, // 500ms between dots updates
-};
+    getVideosByPoster(posterURL) {
+      const key = this.extractThumbKey(posterURL)
+      if (!key) return []
+      const videoId = this.thumbToVideoId.get(key)
+      return videoId ? this.getVideosForId(videoId) : []
+    },
 
-// Add these variables
-let activeDownloads = 0;
-let downloadQueue = [];
+    extractThumbKey(url) {
+      if (!url) return null
+      const match = /\/(\d{6,}_\d{6,})_/.exec(url)
+      return match ? match[1] : null
+    },
 
-// Add this utility function
-function debounce(func, wait) {
-    let timeout;
-    return function executedFunction(...args) {
-        const later = () => {
-            clearTimeout(timeout);
-            func(...args);
-        };
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
-    };
-}
+    parseResponse(text) {
+      if (!text || text.length < 100) return
+      if (
+        !text.includes('playable_url') &&
+        !text.includes('progressive_url') &&
+        !text.includes('browser_native_') &&
+        !text.includes('base_url')
+      ) return
 
-function cleanup() {
-    if (findPlayVideoInterval) {
-        clearInterval(findPlayVideoInterval);
-    }
-    if (observer) {
-        observer.disconnect();
-    }
-    
-    // Clean up video elements and their observers
-    document.querySelectorAll('video').forEach(video => {
-        video.pause();
-        video.src = '';
-        video.load();
-    });
-    
-    // Remove existing panels if they exist
-    const existingPanel = document.getElementById(videoDownloadPanelId);
-    if (existingPanel) {
-        existingPanel.remove();
-    }
-    
-    // Clear stored links
-    rawVideoLinks.clear();
-}
-
-(function () {
-    cleanup(); // Clean up any existing instances
-    initializeScript(); // Initialize immediately
-
-    // Create the observer for future navigation
-    observer = new MutationObserver((mutations) => {
-        if (!document.getElementById(videoDownloadPanelId)) {
-            initializeScript();
+      try {
+        const chunks = text.split('\n').filter((line) => line.trim().startsWith('{'))
+        for (const chunk of chunks) {
+          try {
+            this.extractFromJSON(JSON.parse(chunk))
+          } catch {}
         }
-    });
+      } catch {}
 
-    observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true
-    });
+      this.extractByRegex(text)
+    },
 
-    // Handle cleanup when navigating away
-    window.addEventListener('beforeunload', cleanup);
-})();
+    extractFromJSON(obj, videoId = null, thumbs = []) {
+      if (!obj || typeof obj !== 'object') return
+      if (Array.isArray(obj)) {
+        for (const item of obj) this.extractFromJSON(item, videoId, thumbs)
+        return
+      }
 
-function initializeScript() {
-    // Create panel immediately
-    initComponents();
-    appendLogText("------------\npage loaded....\n------------");
-    
-    // Stop any existing search
-    stopSearchInterval();
-    
-    // Start first scan immediately
-    checkForLinks();
-    
-    // Set up interval for subsequent scans
-    const interval = rawVideoLinks.size > 0 ? INTERVALS.AFTER_FOUND : INTERVALS.DEFAULT;
-    findPlayVideoInterval = setInterval(checkForLinks, interval);
-}
+      if (obj.video_id && /^\d+$/.test(String(obj.video_id))) videoId = String(obj.video_id)
+      if (obj.videoId && /^\d+$/.test(String(obj.videoId))) videoId = String(obj.videoId)
+      if (obj.__typename === 'Video' && obj.id && /^\d+$/.test(String(obj.id))) videoId = String(obj.id)
 
-function checkForLinks() {
-    appendLogText("------------\nscanning....\n------------");
-    // Only proceed if we're not already scanning and the interval is active
-    if (!hasStarted && findPlayVideoInterval) {
-        hasStarted = true;
-        appendLogText("Remove all links...");
-        rawVideoLinks = new Map();
-        appendURL();
-        hasStarted = false;
-    } else {
-        appendLogText("Scanning is in progress already...");
-    }
-}
-
-function generateVideoLinksPanel(){
-    appendLogText("------------\nGenerating Video Links panel...\n------------");
-    //create a new panel for all links
-    videoLinksPanel = document.createElement("div");
-    videoLinksPanel.name = videoLinksPanelId;
-    videoLinksPanel.id = videoLinksPanelId;
-    videoLinksPanel.style.width = 'fit-content';
-    videoLinksPanel.style.position = 'relative';
-    videoLinksPanel.style.margin = '10px 0px';
-    videoLinksPanel.style.zIndex = '5000';
-    videoLinksPanel.style.display = 'flex';
-    videoLinksPanel.style.flexDirection = 'column';
-    videoLinksPanel.style.alignItems = 'center';
-    videoLinksPanel.style.backgroundColor = '#ffffff';
-    videoLinksPanel.style.padding = '10px';
-
-    // Add the links panel to the content container
-    const contentContainer = videoDownloadPanel.querySelector('div:nth-child(2)');
-    if (contentContainer) {
-        contentContainer.appendChild(videoLinksPanel);
-    }
-}
-
-function generateInfoPanel(){
-    appendLogText("------------\nGenerating Info panel...\n------------");
-    //create a new panel for info
-    infoPanel = document.createElement("textarea");
-    infoPanel.name = infoPanelID;
-    infoPanel.id = infoPanelID;
-    infoPanel.style.width = "calc(100% - 20px)"; // Account for padding
-    infoPanel.style.height = "100px";
-    infoPanel.style.position = 'relative';
-    infoPanel.rows = 4;
-    infoPanel.style.zIndex = "5000";
-    infoPanel.style.backgroundColor = "#f5f5f5";
-    infoPanel.style.border = "1px solid #ddd";
-    infoPanel.style.borderRadius = "4px";
-    infoPanel.style.padding = "8px";
-    infoPanel.style.fontSize = "12px";
-    infoPanel.style.fontFamily = "monospace";
-    infoPanel.style.resize = "vertical";
-
-    // Add the info panel to the content container
-    const contentContainer = videoDownloadPanel.querySelector('div:nth-child(2)');
-    if (contentContainer) {
-        contentContainer.appendChild(infoPanel);
-    }
-}
-
-function generateVideoDownloadPanel() {
-    appendLogText("------------\nGenerating Video Download panel...\n------------");
-    
-    videoDownloadPanel = document.createElement("div");
-    videoDownloadPanel.name = videoDownloadPanelId;
-    videoDownloadPanel.id = videoDownloadPanelId;
-    Object.assign(videoDownloadPanel.style, {
-        top: "20px",
-        right: "20px", // Keep panel anchored to the right
-        position: "fixed",
-        margin: "0",
-        width: "520px", // Default width with toggle
-        maxHeight: "90vh",
-        display: "flex",
-        flexDirection: "row",
-        zIndex: "9999",
-        backgroundColor: "#ffffff",
-        boxShadow: "0 4px 20px rgba(0,0,0,0.15)",
-        borderRadius: "8px",
-        overflow: "visible" // Allow info panel to expand outside
-    });
-
-    // Create info section (left side)
-    const infoSection = createInfoSection();
-    
-    // Create main content container (right side)
-    const mainContent = document.createElement('div');
-    Object.assign(mainContent.style, {
-        flex: 'none',
-        display: 'flex',
-        flexDirection: 'column',
-        width: '500px',
-        minWidth: '500px'
-    });
-
-    // Add sections to main content
-    const headerBar = createHeaderBar();
-    headerBar.classList.add('header-bar');
-    const contentContainer = createContentContainer();
-    
-    mainContent.appendChild(headerBar);
-    mainContent.appendChild(contentContainer);
-    
-    videoDownloadPanel.appendChild(infoSection);
-    videoDownloadPanel.appendChild(mainContent);
-    
-    document.body.appendChild(videoDownloadPanel);
-    makeDraggable(videoDownloadPanel, headerBar);
-}
-
-function createHeaderBar() {
-    const headerBar = document.createElement('div');
-    Object.assign(headerBar.style, {
-        width: '100%',
-        backgroundColor: '#4a76a8',
-        color: 'white',
-        borderBottom: '1px solid rgba(255,255,255,0.1)',
-        borderRadius: '8px 8px 0 0',
-        cursor: 'move'
-    });
-
-    // Title section
-    const titleSection = document.createElement('div');
-    Object.assign(titleSection.style, {
-        padding: '12px 15px',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        borderBottom: '1px solid rgba(255,255,255,0.1)'
-    });
-
-    const title = document.createElement('span');
-    title.textContent = 'Video Downloader';
-    title.style.fontWeight = '600';
-    title.style.fontSize = '14px';
-
-    const toggleButton = createToggleButton();
-    
-    titleSection.appendChild(title);
-    titleSection.appendChild(toggleButton);
-
-    // Search control section
-    const searchSection = document.createElement('div');
-    Object.assign(searchSection.style, {
-        padding: '10px 15px',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        backgroundColor: 'rgba(0,0,0,0.1)'
-    });
-
-    const searchControl = createSearchControl();
-    searchSection.appendChild(searchControl);
-
-    headerBar.appendChild(titleSection);
-    headerBar.appendChild(searchSection);
-    
-    return headerBar;
-}
-
-function createToggleButton() {
-    const button = document.createElement('button');
-    button.innerHTML = '▼'; // Down arrow for expanded state
-    Object.assign(button.style, {
-        background: 'none',
-        border: 'none',
-        color: 'white',
-        fontSize: '16px',
-        cursor: 'pointer',
-        padding: '0 5px',
-        lineHeight: '1',
-        opacity: '0.8',
-        transition: 'transform 0.3s ease'
-    });
-    
-    let isExpanded = true;
-    
-    button.addEventListener('mouseover', () => button.style.opacity = '1');
-    button.addEventListener('mouseout', () => button.style.opacity = '0.8');
-    button.addEventListener('click', (e) => {
-        e.stopPropagation(); // Prevent dragging when clicking the button
-        
-        const panel = document.getElementById(videoDownloadPanelId);
-        const videosContainer = document.getElementById(videoLinksPanelId);
-        const infoContainer = document.getElementById(infoPanelID)?.parentElement;
-        const searchSection = button.closest('.header-bar')?.querySelector('div:nth-child(2)');
-        
-        if (isExpanded) {
-            // Collapse
-            if (videosContainer) videosContainer.style.display = 'none';
-            if (infoContainer) infoContainer.style.display = 'none';
-            if (searchSection) searchSection.style.display = 'none';
-            button.innerHTML = '▲'; // Up arrow for collapsed state
-            button.style.transform = 'rotate(180deg)';
-            
-            // Store current height before collapsing
-            panel.dataset.expandedHeight = panel.style.height;
-            panel.style.height = 'auto';
-        } else {
-            // Expand
-            if (videosContainer) videosContainer.style.display = 'block';
-            if (infoContainer) infoContainer.style.display = 'flex'; // Changed to flex
-            if (searchSection) searchSection.style.display = 'flex';
-            button.innerHTML = '▼'; // Down arrow for expanded state
-            button.style.transform = 'rotate(0deg)';
-            
-            // Restore previous height if it was stored
-            if (panel.dataset.expandedHeight) {
-                panel.style.height = panel.dataset.expandedHeight;
-            }
+      const nextThumbs = [...thumbs]
+      for (const key of ['preferred_thumbnail', 'thumbnailImage', 'scrubber_thumbnail', 'thumbnail_image', 'previewImage', 'stillImage', 'image']) {
+        const val = obj[key]
+        if (val && typeof val === 'object') {
+          const uri = val.uri || val.url || val.src || ''
+          if (typeof uri === 'string' && uri.includes('fbcdn')) nextThumbs.push(uri)
+        } else if (typeof val === 'string' && val.includes('fbcdn')) {
+          nextThumbs.push(val)
         }
-        
-        isExpanded = !isExpanded;
-    });
-    
-    return button;
-}
+      }
+      if (videoId && typeof obj.uri === 'string' && obj.uri.includes('fbcdn') && obj.uri.includes('t15.')) {
+        nextThumbs.push(obj.uri)
+      }
 
-function createContentContainer() {
-    const container = document.createElement('div');
-    Object.assign(container.style, {
-        flex: '1',
-        display: 'flex',
-        flexDirection: 'column',
-        padding: '10px',
-        height: 'calc(90vh - 100px)', // Adjust based on header height
-        boxSizing: 'border-box',
-        overflow: 'hidden' // Ensure content doesn't overflow
-    });
+      for (const key of ['playable_url_quality_hd', 'playable_url', 'browser_native_hd_url', 'browser_native_sd_url', 'progressive_url', 'base_url']) {
+        if (typeof obj[key] === 'string') this.addVideo(videoId || '_unknown', obj[key], key)
+      }
 
-    // Create videos panel section
-    const videosSection = createVideosSection();
-    container.appendChild(videosSection);
-    
-    return container;
-}
-
-function createInfoSection() {
-    const container = document.createElement('div');
-    Object.assign(container.style, {
-        position: 'absolute',
-        right: '100%', // Position to the left of the main panel
-        top: '0',
-        height: '100%',
-        width: '20px',
-        display: 'flex',
-        flexDirection: 'row',
-        transition: 'width 0.3s ease',
-        overflow: 'hidden',
-        backgroundColor: '#f0f0f0',
-        borderRadius: '8px 0 0 8px', // Round left corners
-        boxShadow: '-2px 0 5px rgba(0,0,0,0.1)' // Add shadow on the left
-    });
-
-    // Create toggle button container
-    const toggleContainer = document.createElement('div');
-    Object.assign(toggleContainer.style, {
-        width: '20px',
-        minWidth: '20px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: '#f0f0f0',
-        cursor: 'pointer',
-        borderRight: '1px solid #dee2e6',
-        zIndex: '1'
-    });
-
-    const toggleButton = document.createElement('div');
-    Object.assign(toggleButton.style, {
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: '10px',
-        padding: '10px 0',
-        userSelect: 'none',
-        color: '#666',
-        fontSize: '14px',
-        fontWeight: 'bold'
-    });
-
-    // Create info icon
-    const infoIcon = document.createElement('span');
-    infoIcon.textContent = 'ℹ';
-    Object.assign(infoIcon.style, {
-        fontSize: '14px'
-    });
-
-    // Create arrow
-    const arrow = document.createElement('span');
-    arrow.textContent = '►';
-    Object.assign(arrow.style, {
-        fontSize: '12px',
-        transition: 'transform 0.3s ease'
-    });
-
-    toggleButton.appendChild(infoIcon);
-    toggleButton.appendChild(arrow);
-
-    // Create info panel container
-    const infoPanelContainer = document.createElement('div');
-    Object.assign(infoPanelContainer.style, {
-        width: '300px',
-        minWidth: '300px',
-        display: 'flex',
-        flexDirection: 'column',
-        backgroundColor: '#f8f9fa',
-        borderRight: '1px solid #dee2e6'
-    });
-
-    // Create info panel
-    infoPanel = document.createElement('textarea');
-    infoPanel.id = infoPanelID;
-    Object.assign(infoPanel.style, {
-        flex: '1',
-        width: '100%',
-        height: '100%',
-        padding: '8px',
-        fontSize: '12px',
-        fontFamily: 'monospace',
-        border: 'none',
-        resize: 'none',
-        backgroundColor: '#f8f9fa',
-        boxSizing: 'border-box'
-    });
-    
-    let isExpanded = false;
-    const toggleInfoPanel = () => {
-        isExpanded = !isExpanded;
-        container.style.width = isExpanded ? '320px' : '20px';
-        arrow.style.transform = isExpanded ? 'rotate(180deg)' : 'rotate(0deg)';
-    };
-
-    toggleContainer.addEventListener('click', toggleInfoPanel);
-    
-    infoPanelContainer.appendChild(infoPanel);
-    toggleContainer.appendChild(toggleButton);
-    container.appendChild(toggleContainer);
-    container.appendChild(infoPanelContainer);
-    
-    // Observer to maintain textarea height when panel is expanded
-    const resizeObserver = new ResizeObserver(() => {
-        if (isExpanded) {
-            const containerHeight = container.clientHeight;
-            infoPanel.style.height = `${containerHeight}px`;
+      if (videoId) {
+        for (const thumb of nextThumbs) {
+          const thumbKey = this.extractThumbKey(thumb)
+          if (thumbKey && !this.thumbToVideoId.has(thumbKey)) this.thumbToVideoId.set(thumbKey, videoId)
         }
-    });
-    
-    resizeObserver.observe(container);
-    
-    return container;
-}
+      }
 
-function createVideosSection() {
-    const container = document.createElement('div');
-    Object.assign(container.style, {
-        flex: '1',
-        display: 'flex',
-        flexDirection: 'column',
-        overflowY: 'auto',
-        overflowX: 'hidden'
-    });
+      for (const val of Object.values(obj)) {
+        if (val && typeof val === 'object' && !val.$$typeof) this.extractFromJSON(val, videoId, nextThumbs)
+      }
+    },
 
-    videoLinksPanel = document.createElement('div');
-    videoLinksPanel.id = videoLinksPanelId;
-    Object.assign(videoLinksPanel.style, {
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '10px',
-        padding: '5px'
-    });
-
-    // Add initial loading state
-    showLoadingState(videoLinksPanel);
-    
-    container.appendChild(videoLinksPanel);
-    return container;
-}
-
-function showLoadingState(container) {
-    // Create loading container
-    const loadingContainer = document.createElement('div');
-    Object.assign(loadingContainer.style, {
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '20px',
-        color: '#666',
-        height: '100px'
-    });
-    
-    // Add loading text
-    const loadingText = document.createElement('div');
-    loadingText.textContent = 'Searching';
-    loadingText.style.marginBottom = '10px';
-    loadingText.style.fontSize = '14px';
-    
-    // Add dots container
-    const dots = document.createElement('span');
-    dots.style.fontSize = '20px';
-    dots.style.letterSpacing = '4px';
-    
-    loadingContainer.appendChild(loadingText);
-    loadingContainer.appendChild(dots);
-    
-    // Clear container and add loading elements
-    removeAllChildNodes(container);
-    container.appendChild(loadingContainer);
-    
-    // Animate dots
-    let dotCount = 0;
-    const updateDots = () => {
-        dots.textContent = '.'.repeat(dotCount + 1);
-        dotCount = (dotCount + 1) % LOADING_STATES.DOTS_COUNT;
-    };
-    
-    updateDots(); // Initial dots
-    const dotsInterval = setInterval(updateDots, LOADING_STATES.INTERVAL);
-    
-    // Store interval ID in container dataset for cleanup
-    container.dataset.loadingInterval = dotsInterval;
-}
-
-function clearLoadingState(container) {
-    const intervalId = container.dataset.loadingInterval;
-    if (intervalId) {
-        clearInterval(parseInt(intervalId));
-        delete container.dataset.loadingInterval;
-    }
-}
-
-function createSearchControl() {
-    const container = document.createElement('div');
-    container.style.display = 'flex';
-    container.style.alignItems = 'center';
-    container.style.gap = '10px';
-    container.style.width = '100%';
-
-    const button = document.createElement('button');
-    button.id = 'searchControlBtn';
-    Object.assign(button.style, {
-        padding: '5px 10px',
-        borderRadius: '4px',
-        border: 'none',
-        cursor: 'pointer',
-        backgroundColor: '#4CAF50',
-        color: 'white',
-        fontSize: '13px'
-    });
-
-    const countdownText = document.createElement('span');
-    countdownText.id = 'searchCountdown';
-    countdownText.style.color = 'rgba(255,255,255,0.8)';
-    countdownText.style.fontSize = '13px';
-    
-    container.appendChild(button);
-    container.appendChild(countdownText);
-
-    let countdownInterval;
-    
-    function updateButtonState(isSearching) {
-        if (isSearching) {
-            button.textContent = 'Stop Searching';
-            button.style.backgroundColor = '#4CAF50'; // Green for active
-            
-            // Reset state when starting new search
-            rawVideoLinks.clear(); // Clear existing links to reset timer to 2s
-            hasStarted = false;    // Reset search state
-            
-            // Start new search cycle
-            stopSearchInterval(); // Clear any existing interval
-            checkForLinks(); // Immediate search
-            findPlayVideoInterval = setInterval(checkForLinks, INTERVALS.DEFAULT); // Always start with 2s interval
-            
-            startCountdown();
-        } else {
-            button.textContent = 'Start Searching';
-            button.style.backgroundColor = '#f44336'; // Red for inactive
-            stopSearchInterval();
-            stopCountdown();
+    extractByRegex(text) {
+      const idRe = /"(?:video_id|videoId|id)"\s*:\s*"(\d+)"/g
+      let match
+      while ((match = idRe.exec(text)) !== null) {
+        const videoId = match[1]
+        const chunk = text.substring(Math.max(0, match.index - 6000), Math.min(text.length, match.index + 6000))
+        for (const re of [
+          /"playable_url_quality_hd"\s*:\s*"([^"]+)"/g,
+          /"playable_url"\s*:\s*"([^"]+)"/g,
+          /"browser_native_hd_url"\s*:\s*"([^"]+)"/g,
+          /"browser_native_sd_url"\s*:\s*"([^"]+)"/g,
+          /"progressive_url"\s*:\s*"([^"]+)"/g,
+          /"base_url"\s*:\s*"([^"]+)"/g,
+        ]) {
+          let urlMatch
+          while ((urlMatch = re.exec(chunk)) !== null) this.addVideo(videoId, urlMatch[1], 'network')
         }
-    }
+      }
+    },
 
-    function startCountdown() {
-        if (countdownInterval) {
-            clearInterval(countdownInterval);
+    addVideo(videoId, rawUrl, quality = 'network') {
+      const url = cleanVideoUrl(rawUrl)
+      if (!isValidVideoUrl(url)) return false
+      if (!this.captured.has(videoId)) this.captured.set(videoId, new Set())
+      this.captured.get(videoId).add(url)
+      return addVideoCandidate(url, quality, videoId)
+    },
+
+    interceptFetch() {
+      const originalFetch = window.fetch
+      if (typeof originalFetch !== 'function') return
+      const self = this
+      window.fetch = async function (...args) {
+        const response = await originalFetch.apply(this, args)
+        try {
+          const url = String(args[0]?.url || args[0] || '')
+          if (url.includes('/graphql') || url.includes('facebook.com/api/graphql')) {
+            response.clone().text().then((text) => self.parseResponse(text)).catch(() => {})
+          }
+        } catch {}
+        return response
+      }
+    },
+
+    interceptXHR() {
+      const originalOpen = XMLHttpRequest.prototype.open
+      const originalSend = XMLHttpRequest.prototype.send
+      const self = this
+      XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+        this.__videoCaptureUrl = url
+        return originalOpen.call(this, method, url, ...rest)
+      }
+      XMLHttpRequest.prototype.send = function (...args) {
+        this.addEventListener('load', function () {
+          try {
+            const url = String(this.__videoCaptureUrl || '')
+            if (url.includes('/graphql') || url.includes('facebook.com/api/graphql')) self.parseResponse(this.responseText)
+          } catch {}
+        })
+        return originalSend.apply(this, args)
+      }
+    },
+  }
+
+  function init() {
+    cleanupExistingPanel()
+    NetCapture.install()
+    createPanel()
+    installObserver()
+    scanVideos('initial')
+    window.addEventListener('beforeunload', cleanup)
+  }
+
+  function cleanupExistingPanel() {
+    const oldPanel = document.getElementById(PANEL_ID)
+    if (oldPanel) oldPanel.remove()
+  }
+
+  function cleanup() {
+    if (state.observer) state.observer.disconnect()
+    if (state.scanTimer) clearTimeout(state.scanTimer)
+  }
+
+  function installObserver() {
+    state.observer = new MutationObserver((mutations) => {
+      if (!state.autoScan) return
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType !== Node.ELEMENT_NODE) continue
+          if (node.id === PANEL_ID || node.closest?.(`#${PANEL_ID}`)) continue
+          if (node.matches?.('video, [data-video-id], [aria-label="Video player"]') || node.querySelector?.('video, [data-video-id], [aria-label="Video player"]')) {
+            scheduleScan('dom-change')
+            return
+          }
         }
+      }
+    })
+    state.observer.observe(document.body || document.documentElement, { childList: true, subtree: true })
+  }
 
-        // Always start with DEFAULT interval (2s) when manually starting
-        let countdown = INTERVALS.DEFAULT / 1000;
+  function scheduleScan(reason) {
+    if (state.scanTimer) clearTimeout(state.scanTimer)
+    state.scanTimer = setTimeout(() => scanVideos(reason), SCAN_DEBOUNCE_MS)
+  }
 
-        // Update immediately
-        countdownText.textContent = `Next scan in ${countdown}s`;
+  function scanVideos(reason = 'manual') {
+    if (state.scanning) return
+    state.scanning = true
+    const before = state.candidates.size
+    const videoIds = new Set()
+    const posters = new Set()
 
-        countdownInterval = setInterval(() => {
-            countdown--;
-            if (countdown <= 0) {
-                countdown = rawVideoLinks.size > 0 ? 
-                    INTERVALS.AFTER_FOUND / 1000 : 
-                    INTERVALS.DEFAULT / 1000;
-            }
-            if (findPlayVideoInterval) { // Only update if search is active
-                countdownText.textContent = `Next scan in ${countdown}s`;
-            }
-        }, 1000);
-    }
-
-    function stopCountdown() {
-        if (countdownInterval) {
-            clearInterval(countdownInterval);
-            countdownInterval = null;
-        }
-        countdownText.textContent = 'Search stopped';
-    }
-
-    button.addEventListener('click', () => {
-        updateButtonState(!findPlayVideoInterval);
-    });
-
-    // Set initial state
-    updateButtonState(true);
-    
-    return container;
-}
-
-function makeDraggable(element, handle) {
-    let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
-    
-    handle.onmousedown = dragMouseDown;
-
-    function dragMouseDown(e) {
-        e.preventDefault();
-        pos3 = e.clientX;
-        pos4 = e.clientY;
-        document.onmouseup = closeDragElement;
-        document.onmousemove = elementDrag;
-    }
-
-    function elementDrag(e) {
-        e.preventDefault();
-        pos1 = pos3 - e.clientX;
-        pos2 = pos4 - e.clientY;
-        pos3 = e.clientX;
-        pos4 = e.clientY;
-        
-        const newTop = element.offsetTop - pos2;
-        const newLeft = element.offsetLeft - pos1;
-        
-        // Keep within viewport bounds
-        const maxTop = window.innerHeight - element.offsetHeight;
-        const maxLeft = window.innerWidth - element.offsetWidth;
-        
-        element.style.top = `${Math.min(Math.max(0, newTop), maxTop)}px`;
-        element.style.left = `${Math.min(Math.max(0, newLeft), maxLeft)}px`;
-    }
-
-    function closeDragElement() {
-        document.onmouseup = null;
-        document.onmousemove = null;
-    }
-}
-
-function initComponents() {
-    videoDownloadPanel = document.getElementById(videoDownloadPanelId);
-    if (videoDownloadPanel == null) {
-        generateVideoDownloadPanel();
-    }
-    
-    const videoLinksPanel = document.getElementById(videoLinksPanelId);
-    if (videoLinksPanel) {
-        showLoadingState(videoLinksPanel);
-    }
-}
-
-function appendURL() {
     try {
-        appendLogText("Starting video link scan", 'info');
-        const pageSource = document.documentElement.outerHTML;
-        const previousLinksCount = rawVideoLinks.size;
-        let foundLinks = false;
-
-        // Debug log to check page source
-        if (CONFIG.debugMode) {
-            appendLogText("Scanning page source length: " + pageSource.length, 'debug');
-        }
-
-        // Extract HD videos
-        let hdMatch;
-        while ((hdMatch = VIDEO_PATTERNS.HD.exec(pageSource)) !== null) {
-            try {
-                const videoLink = hdMatch[1];
-                if (isValidVideoUrl(videoLink)) {
-                    appendLogText("Found HD video link", 'debug');
-                    rawVideoLinks.set(videoLink, "HD");
-                    foundLinks = true;
-                }
-            } catch (error) {
-                appendLogText(`Error processing HD link: ${error.message}`, 'error');
-            }
-        }
-
-        // Extract SD videos
-        let sdMatch;
-        while ((sdMatch = VIDEO_PATTERNS.SD.exec(pageSource)) !== null) {
-            try {
-                const videoLink = sdMatch[1];
-                if (isValidVideoUrl(videoLink)) {
-                    appendLogText("Found SD video link", 'debug');
-                    rawVideoLinks.set(videoLink, "SD");
-                    foundLinks = true;
-                }
-            } catch (error) {
-                appendLogText(`Error processing SD link: ${error.message}`, 'error');
-            }
-        }
-
-        // Extract resolution-specific videos
-        let resMatch;
-        let resolutionCounter = 0;
-        while ((resMatch = VIDEO_PATTERNS.RESOLUTION.exec(pageSource)) !== null) {
-            try {
-                resolutionCounter++;
-                const basedUrl = resMatch[1] + "";
-                appendLogText(`Found resolution-specific URL [${resolutionCounter}]`, 'debug');
-
-                // Extract URL
-                const urlMatch = /(?<=")(.*?)","bandwidth/g.exec(basedUrl);
-                if (!urlMatch) continue;
-                const videoLink = urlMatch[1];
-
-                // Extract dimensions
-                const heightMatch = /(?<="height":)(.*?),"width"/g.exec(basedUrl);
-                const widthMatch = /(?<="width":)(.*?),"playback_resolution_mos/g.exec(basedUrl);
-
-                if (heightMatch && widthMatch && isValidVideoUrl(videoLink)) {
-                    const height = heightMatch[1];
-                    const width = widthMatch[1];
-                    const resolution = `${height}x${width}`;
-                    rawVideoLinks.set(videoLink, resolution);
-                    foundLinks = true;
-                    appendLogText(`Added ${resolution} video`, 'debug');
-                }
-            } catch (error) {
-                appendLogText(`Error processing resolution link: ${error.message}`, 'error');
-            }
-        }
-
-        if (!foundLinks) {
-            appendLogText("No video links found on this page", 'warn');
-            // Debug log the first 500 chars of page source if in debug mode
-            if (CONFIG.debugMode) {
-                appendLogText("First 500 chars of page source: " + pageSource.substring(0, 500), 'debug');
-            }
-        } else {
-            appendLogText(`Found ${rawVideoLinks.size} video links`, 'info');
-            generateLinkButtons();
-        }
-
-        // After scanning, update interval if links were found
-        if (rawVideoLinks.size > previousLinksCount) {
-            clearInterval(findPlayVideoInterval);
-            findPlayVideoInterval = setInterval(checkForLinks, INTERVALS.AFTER_FOUND);
-            
-            // Update countdown display
-            const countdownText = document.getElementById('searchCountdown');
-            if (countdownText) {
-                countdownText.textContent = `Next scan in ${INTERVALS.AFTER_FOUND / 1000}s`;
-            }
-        }
+      scanDOM(videoIds, posters)
+      scanFiber(videoIds)
+      mergeNetworkCapture(videoIds, posters)
+      fallbackScriptJSON(videoIds, posters)
+      renderBestVideos()
+      updateStatus(`Found ${state.links.size} videos`)
+      log(`Scan ${reason}: +${state.candidates.size - before} candidates, ${state.links.size} best videos`)
     } catch (error) {
-        appendLogText(`Failed to process video links: ${error.message}`, 'error');
+      log(`Scan failed: ${error.message}`, 'error')
+    } finally {
+      state.scanning = false
     }
-}
+  }
 
-// Update isValidVideoUrl to be less strict
-function isValidVideoUrl(url) {
+  function scanDOM(videoIds, posters) {
+    const roots = document.querySelectorAll('video, video source[src], [data-video-id], [data-video-url], [data-src], [aria-label="Video player"], [data-instancekey], a[href*="/reel/"], a[href*="/videos/"], a[href*="/watch"]')
+    for (const el of roots) {
+      if (el.closest?.(`#${PANEL_ID}`)) continue
+      const src = el.currentSrc || el.src || el.getAttribute?.('src') || el.getAttribute?.('data-video-url') || el.getAttribute?.('data-src')
+      if (src) addVideoCandidate(src, 'DOM')
+
+      const poster = el.getAttribute?.('poster')
+      if (poster && poster.includes('fbcdn')) posters.add(cleanVideoUrl(poster))
+
+      const dataVideoId = el.getAttribute?.('data-video-id')
+      if (dataVideoId && /^\d+$/.test(dataVideoId)) videoIds.add(dataVideoId)
+
+      const href = el.href || el.getAttribute?.('href') || ''
+      const idMatch = /\/videos\/[^/]*\/(\d+)/.exec(href) || /\/videos\/(\d+)/.exec(href) || /\/reel\/(\d+)/.exec(href) || /[?&]v=(\d+)/.exec(href)
+      if (idMatch) videoIds.add(idMatch[1])
+    }
+
+    for (const poster of posters) {
+      const thumbKey = NetCapture.extractThumbKey(poster)
+      const videoId = thumbKey ? NetCapture.thumbToVideoId.get(thumbKey) : null
+      if (videoId) videoIds.add(videoId)
+    }
+  }
+
+  function scanFiber(videoIds) {
+    const urls = []
+    const candidates = document.querySelectorAll('video, [aria-label="Video player"], [data-instancekey], [data-video-id]')
+    for (const el of candidates) {
+      if (el.closest?.(`#${PANEL_ID}`)) continue
+      extractVideoFromFiber(el, videoIds, urls)
+      const parent = el.closest?.('div[role="article"], [data-pagelet], [role="main"]')
+      if (parent) extractVideoFromFiber(parent, videoIds, urls)
+    }
+    for (const url of urls) addVideoCandidate(url, 'Fiber')
+  }
+
+  function extractVideoFromFiber(el, videoIds, videoUrls) {
     try {
-        if (!url) return false;
-        
-        // Clean the URL first
-        url = url.replace(/\\/g, "");
-        url = url.replace(/u0025/g, "%");
-        
-        const urlObj = new URL(url);
-        
-        // Extended list of valid domains
-        const validDomains = [
-            'fbcdn.net',
-            'facebook.com',
-            'fbsbx.com',
-            'fb.watch',
-            'fb.gg'
-        ];
-        
-        // Check for valid domain
-        const isValidDomain = validDomains.some(domain => 
-            urlObj.hostname.toLowerCase().includes(domain));
-        
-        // Check for valid video path
-        const hasValidPath = /\.(mp4|mov|m4v)($|\?)|\/video\/|\/fbcdn\//.test(urlObj.pathname);
-        
-        return urlObj.protocol === 'https:' && 
-               isValidDomain && 
-               hasValidPath;
-    } catch (error) {
-        appendLogText(`Invalid URL: ${error.message}`, 'debug');
-        return false;
-    }
-}
+      const fiberKey = Object.keys(el).find((key) => key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$'))
+      if (!fiberKey) return
+      let fiber = el[fiberKey]
+      for (let i = 0; i < FIBER_MAX_ANCESTORS && fiber; i++) {
+        const props = fiber.memoizedProps || fiber.pendingProps
+        if (props) scanPropsForVideo(props, videoIds, videoUrls, 0)
+        fiber = fiber.return
+      }
+    } catch {}
+  }
 
-function generateLinkButtons() {
-    let buttonCounter = 0;
-    appendLogText(`Generating buttons for ${rawVideoLinks.size} videos`, 'info');
-
-    const videoLinksPanel = document.getElementById(videoLinksPanelId);
-    if (!videoLinksPanel) {
-        appendLogText('Video links panel not found', 'error');
-        return;
+  function scanPropsForVideo(obj, videoIds, videoUrls, depth) {
+    if (!obj || typeof obj !== 'object' || depth > FIBER_MAX_DEPTH) return
+    if (Array.isArray(obj)) {
+      for (const item of obj) scanPropsForVideo(item, videoIds, videoUrls, depth + 1)
+      return
     }
 
-    clearLoadingState(videoLinksPanel);
-    removeAllChildNodes(videoLinksPanel);
+    for (const key of ['videoId', 'video_id', 'videoID']) {
+      const val = obj[key]
+      if (val && /^\d+$/.test(String(val))) videoIds.add(String(val))
+    }
+    if (obj.__typename === 'Video' && obj.id && /^\d+$/.test(String(obj.id))) videoIds.add(String(obj.id))
 
-    if (rawVideoLinks.size === 0) {
-        const noVideosMsg = document.createElement('div');
-        Object.assign(noVideosMsg.style, {
-            padding: '20px',
-            textAlign: 'center',
-            color: '#666',
-            fontSize: '14px'
-        });
-        noVideosMsg.textContent = 'No videos found on this page';
-        videoLinksPanel.appendChild(noVideosMsg);
-        return;
+    for (const key of ['playable_url_quality_hd', 'playable_url', 'browser_native_hd_url', 'browser_native_sd_url', 'progressive_url', 'base_url', 'src', 'source', 'videoSrc']) {
+      const val = obj[key]
+      if (typeof val === 'string' && isValidVideoUrl(cleanVideoUrl(val))) videoUrls.push(val)
     }
 
-    for (let [videoLink, quality] of rawVideoLinks) {
-        buttonCounter++;
-        
-        const container = document.createElement('div');
-        Object.assign(container.style, {
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px',
-            padding: '8px',
-            backgroundColor: '#f0f0f0',
-            borderRadius: '5px',
-            width: '100%',
-            boxSizing: 'border-box'
-        });
-
-        const videoContainer = document.createElement('div');
-        Object.assign(videoContainer.style, {
-            height: '100px',
-            width: '178px',
-            flexShrink: '0',
-            position: 'relative',
-            overflow: 'hidden'
-        });
-
-        const video = document.createElement('video');
-        Object.assign(video.style, {
-            height: '100%',
-            width: '100%',
-            objectFit: 'contain',
-            borderRadius: '4px',
-            backgroundColor: '#000'
-        });
-        video.controls = true;
-        video.preload = 'metadata';
-        video.muted = true;
-
-        // Clean the video URL
-        const cleanedUrl = cleanVideoUrl(videoLink);
-        video.src = cleanedUrl;
-
-        videoContainer.appendChild(video);
-
-        // Create button container for right alignment
-        const buttonContainer = document.createElement('div');
-        Object.assign(buttonContainer.style, {
-            marginLeft: 'auto', // Push to right
-            display: 'flex',
-            alignItems: 'center'
-        });
-
-        // Create open button
-        const button = document.createElement('button');
-        button.innerHTML = `${quality} - Open Video ${buttonCounter} 🔗`;
-        Object.assign(button.style, {
-            padding: '8px 16px',
-            fontSize: '14px',
-            backgroundColor: '#007bff',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: 'pointer',
-            whiteSpace: 'nowrap' // Prevent button text from wrapping
-        });
-
-        // Add hover effect
-        button.addEventListener('mouseover', () => button.style.opacity = '0.9');
-        button.addEventListener('mouseout', () => button.style.opacity = '1');
-
-        // Add click handler
-        button.addEventListener('click', () => {
-            try {
-                window.open(cleanedUrl, '_blank');
-                appendLogText(`Opening video link in new tab`, 'info');
-            } catch (error) {
-                appendLogText(`Failed to open link: ${error.message}`, 'error');
-            }
-        });
-        
-        buttonContainer.appendChild(button);
-        container.appendChild(videoContainer);
-        container.appendChild(buttonContainer);
-        videoLinksPanel.appendChild(container);
-
-        // Handle video errors
-        video.addEventListener('error', () => {
-            appendLogText(`Failed to load video ${buttonCounter}`, 'error');
-            videoContainer.style.backgroundColor = '#ffebee';
-            const errorMsg = document.createElement('div');
-            Object.assign(errorMsg.style, {
-                color: '#d32f2f',
-                padding: '10px',
-                textAlign: 'center',
-                height: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center'
-            });
-            errorMsg.textContent = 'Video preview unavailable';
-            videoContainer.innerHTML = '';
-            videoContainer.appendChild(errorMsg);
-        });
-
-        // Optimize performance by pausing videos when not in viewport
-        const observer = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
-                if (!entry.isIntersecting && !video.paused) {
-                    video.pause();
-                }
-            });
-        }, { threshold: 0.5 });
-
-        observer.observe(videoContainer);
+    for (const val of Object.values(obj)) {
+      if (val && typeof val === 'object' && !val.$$typeof) scanPropsForVideo(val, videoIds, videoUrls, depth + 1)
     }
-}
+  }
 
-// Add a helper function to clean video URLs
-function cleanVideoUrl(url) {
-    if (!url) return '';
-    
-    // Remove backslashes
-    url = url.replace(/\\/g, '');
-    // Replace encoded percent signs
-    url = url.replace(/u0025/g, '%');
-    // Decode the URL
+  function mergeNetworkCapture(videoIds, posters) {
+    for (const videoId of videoIds) {
+      for (const url of NetCapture.getVideosForId(videoId)) addVideoCandidate(url, 'Network', videoId)
+    }
+    for (const poster of posters) {
+      for (const url of NetCapture.getVideosByPoster(poster)) addVideoCandidate(url, 'Poster')
+    }
+  }
+
+  function fallbackScriptJSON(videoIds, posters) {
+    if (videoIds.size === 0 && posters.size === 0) return
+    const posterKeys = [...posters].map((poster) => NetCapture.extractThumbKey(poster)).filter(Boolean)
+    const scripts = document.querySelectorAll('script[type="application/json"]')
+    for (const script of scripts) {
+      const text = script.textContent || ''
+      if (text.length < 200 || (!text.includes('playable_url') && !text.includes('progressive_url') && !text.includes('browser_native_'))) continue
+      const relevantById = [...videoIds].some((id) => text.includes(`"${id}"`))
+      const relevantByPoster = posterKeys.some((key) => text.includes(key))
+      if (!relevantById && !relevantByPoster) continue
+      NetCapture.parseResponse(text)
+      mergeNetworkCapture(videoIds, posters)
+    }
+  }
+
+  function addVideoCandidate(rawUrl, quality = 'Video', videoId = '') {
+    const url = cleanVideoUrl(rawUrl)
+    if (!isValidVideoUrl(url)) return false
+    if (state.candidates.has(url)) return false
+    state.candidates.set(url, { quality, videoId, score: getVideoScore(url) })
+    return true
+  }
+
+  function renderBestVideos() {
+    const bestUrls = selectBestQualityVideos([...state.candidates.keys()])
+    state.links = new Map()
+    for (const url of bestUrls) state.links.set(url, state.candidates.get(url) || { quality: 'Video', videoId: '' })
+
+    const links = document.getElementById(LINKS_ID)
+    if (!links) return
+    links.textContent = ''
+    for (const [url, meta] of state.links) appendLinkRow(url, meta.quality, meta.videoId, meta.score)
+  }
+
+  function decodeEfg(url) {
     try {
-        return decodeURIComponent(url);
-    } catch (e) {
-        appendLogText(`Error decoding URL: ${e.message}`, 'error');
-        return url;
+      const parsed = new URL(url)
+      let b64 = parsed.searchParams.get('efg')
+      if (!b64) return null
+      b64 = b64.replace(/-/g, '+').replace(/_/g, '/')
+      b64 += '='.repeat((4 - (b64.length % 4)) % 4)
+      return JSON.parse(atob(b64))
+    } catch {
+      return null
     }
-}
+  }
 
-function removeAllChildNodes(parentNode){
-    appendLogText("Removing child nodes....");
-    while (parentNode.firstChild) {
-        if(parentNode.firstChild.firstChild){
-            removeAllChildNodes(parentNode.firstChild.firstChild);
-        }
-        parentNode.removeChild(parentNode.lastChild);
-    }
-}
+  function getVideoScore(url) {
+    const efg = decodeEfg(url)
+    const tag = (efg && efg.vencode_tag) || ''
+    const bitrate = Number((efg && efg.bitrate) || /[?&]bitrate=(\d+)/.exec(url)?.[1] || 0)
+    const resolution = Number(/(\d{3,4})p/i.exec(tag)?.[1] || /[?&](?:height|quality)=(\d{3,4})/.exec(url)?.[1] || 0)
+    const isAudio = /audio/i.test(tag)
+    const isDashOnly = /dash_/i.test(tag) && !/(sve_sd|sve_hd|progressive)/i.test(tag)
+    let playRank = 2
+    if (/sve_sd|sve_hd|progressive/i.test(tag)) playRank = 3
+    if (isDashOnly) playRank = 1
+    if (isAudio) playRank = 0
+    return { assetId: efg?.xpv_asset_id ? String(efg.xpv_asset_id) : null, tag, bitrate, resolution, isAudio, playRank }
+  }
 
-// Function to update the position of the floating div
-function updateFloatingTablePosition() {
-    if (videoDownloadPanel.getBoundingClientRect().top > topOffset) {
-        videoDownloadPanel.style.top = (videoDownloadPanel.getBoundingClientRect().top - topOffset) + 'px';
-        appendLogText("distance to the top: " +videoDownloadPanel.getBoundingClientRect().top);
-    } else {
-        videoDownloadPanel.style.top = topOffset;
+  function selectBestQualityVideos(urls) {
+    if (urls.length <= 1) return urls
+    const groups = new Map()
+    for (const url of urls) {
+      const score = state.candidates.get(url)?.score || getVideoScore(url)
+      const key = score.assetId || state.candidates.get(url)?.videoId || url
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key).push({ url, score })
     }
-    if (videoDownloadPanel.getBoundingClientRect().left > leftOffset) {
-        videoDownloadPanel.style.left = (videoDownloadPanel.getBoundingClientRect().left - leftOffset) + 'px';
-    } else {
-        videoDownloadPanel.style.left = leftOffset;
+    const result = []
+    for (const [, group] of groups) {
+      const usable = group.filter((entry) => !entry.score.isAudio)
+      if (usable.length === 0) continue
+      usable.sort((a, b) => {
+        if (b.score.playRank !== a.score.playRank) return b.score.playRank - a.score.playRank
+        if (b.score.resolution !== a.score.resolution) return b.score.resolution - a.score.resolution
+        return b.score.bitrate - a.score.bitrate
+      })
+      result.push(usable[0].url)
     }
-}
+    return result
+  }
 
-// Replace the existing appendLogText function
-function appendLogText(newLog, type = 'info') {
+  function isValidVideoUrl(url) {
     try {
-        // Get the info panel element
-        const infoPanel = document.getElementById(infoPanelID);
-        if (!infoPanel) {
-            console.warn('Info panel not found');
-            return;
-        }
-        
-        // Format log with timestamp and type
-        const timestamp = new Date().toLocaleTimeString();
-        const formattedLog = `[${timestamp}][${type}] ${newLog}`;
-        
-        // UI Logging
-        if (CONFIG.enableUILog) {
-            // Add new log to existing content
-            infoPanel.value = infoPanel.value 
-                ? infoPanel.value + '\n' + formattedLog 
-                : formattedLog;
-            
-            // Auto-scroll to bottom
-            infoPanel.scrollTop = infoPanel.scrollHeight;
-        }
-        
-        // Console Logging
-        if (CONFIG.enableConsoleLog) {
-            switch(type) {
-                case 'error':
-                    console.error(formattedLog);
-                    break;
-                case 'warn':
-                    console.warn(formattedLog);
-                    break;
-                case 'debug':
-                    if (CONFIG.debugMode) console.debug(formattedLog);
-                    break;
-                default:
-                    console.log(formattedLog);
-            }
-        }
-    } catch (error) {
-        console.error('Logging failed:', error);
+      if (!url) return false
+      const parsed = new URL(url)
+      const host = parsed.hostname.toLowerCase()
+      const validHost = ['fbcdn.net', 'facebook.com', 'fbsbx.com', 'fb.watch', 'fb.gg'].some((domain) => host.includes(domain))
+      const validPath = /\.(mp4|mov|m4v)($|\?)|\/video\/|\/fbcdn\//i.test(parsed.pathname) || url.includes('bytestart=') || url.includes('byteend=')
+      return parsed.protocol === 'https:' && validHost && validPath
+    } catch {
+      return false
     }
-}
+  }
 
-// Add this function to handle all interval cleanup
-function stopSearchInterval() {
-    if (findPlayVideoInterval) {
-        clearInterval(findPlayVideoInterval);
-        findPlayVideoInterval = null;
+  function cleanVideoUrl(url) {
+    if (!url) return ''
+    url = String(url)
+      .replace(/\\\//g, '/')
+      .replace(/\\u0025/g, '%')
+      .replace(/u0025/g, '%')
+      .replace(/&amp;/g, '&')
+      .replace(/\\/g, '')
+    try {
+      return decodeURIComponent(url)
+    } catch {
+      return url
     }
-    hasStarted = false; // Reset the search state flag
-}
+  }
+
+  function createPanel() {
+    const panel = document.createElement('div')
+    panel.id = PANEL_ID
+    Object.assign(panel.style, {
+      position: 'fixed',
+      top: '20px',
+      right: '20px',
+      width: '500px',
+      maxHeight: '85vh',
+      zIndex: '999999',
+      background: '#fff',
+      borderRadius: '8px',
+      boxShadow: '0 4px 20px rgba(0,0,0,.18)',
+      fontFamily: 'Arial, sans-serif',
+      overflow: 'hidden',
+    })
+
+    const header = document.createElement('div')
+    Object.assign(header.style, {
+      background: '#4a76a8',
+      color: '#fff',
+      padding: '10px',
+      cursor: 'move',
+      display: 'flex',
+      gap: '8px',
+      alignItems: 'center',
+    })
+    header.innerHTML = '<strong style="flex:1">Video Downloader</strong>'
+
+    const scanBtn = createButton('Scan', '#4CAF50')
+    scanBtn.onclick = () => scanVideos('manual')
+    const autoBtn = createButton('Auto: ON', '#607d8b')
+    autoBtn.onclick = () => {
+      state.autoScan = !state.autoScan
+      autoBtn.textContent = state.autoScan ? 'Auto: ON' : 'Auto: OFF'
+      log(`Auto scan ${state.autoScan ? 'enabled' : 'disabled'}`)
+    }
+    const clearBtn = createButton('Clear', '#f44336')
+    clearBtn.onclick = clearLinks
+    header.append(scanBtn, autoBtn, clearBtn)
+
+    const status = document.createElement('div')
+    status.id = STATUS_ID
+    Object.assign(status.style, { padding: '8px 10px', fontSize: '13px', color: '#555', borderBottom: '1px solid #eee' })
+    status.textContent = 'Ready'
+
+    const links = document.createElement('div')
+    links.id = LINKS_ID
+    Object.assign(links.style, { maxHeight: '45vh', overflowY: 'auto', padding: '8px', display: 'flex', flexDirection: 'column', gap: '8px' })
+
+    const info = document.createElement('textarea')
+    info.id = INFO_ID
+    Object.assign(info.style, { width: '100%', height: '130px', boxSizing: 'border-box', border: '0', borderTop: '1px solid #eee', padding: '8px', fontSize: '12px', fontFamily: 'monospace', resize: 'vertical' })
+
+    panel.append(header, status, links, info)
+    document.body.appendChild(panel)
+    makeDraggable(panel, header)
+  }
+
+  function createButton(text, color) {
+    const button = document.createElement('button')
+    button.textContent = text
+    Object.assign(button.style, { border: '0', borderRadius: '4px', padding: '5px 9px', color: '#fff', background: color, cursor: 'pointer', fontSize: '12px' })
+    return button
+  }
+
+  function appendLinkRow(url, quality, videoId, score = {}) {
+    const links = document.getElementById(LINKS_ID)
+    if (!links) return
+    const row = document.createElement('div')
+    Object.assign(row.style, { display: 'grid', gridTemplateColumns: '150px 1fr auto auto', gap: '8px', alignItems: 'center', padding: '8px', background: '#f5f5f5', borderRadius: '5px' })
+
+    const preview = document.createElement('video')
+    preview.src = url
+    preview.controls = true
+    preview.muted = true
+    preview.preload = 'metadata'
+    Object.assign(preview.style, { width: '150px', height: '84px', background: '#000', borderRadius: '4px', objectFit: 'contain' })
+    preview.addEventListener('error', () => {
+      const fallback = document.createElement('div')
+      fallback.textContent = 'Preview unavailable'
+      Object.assign(fallback.style, { width: '150px', height: '84px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#ffebee', color: '#b71c1c', borderRadius: '4px', fontSize: '12px', textAlign: 'center' })
+      preview.replaceWith(fallback)
+    }, { once: true })
+
+    const label = document.createElement('div')
+    const qualityText = score.resolution ? `${score.resolution}p` : quality
+    const bitrateText = score.bitrate ? ` • ${Math.round(score.bitrate / 1000)}kbps` : ''
+    label.textContent = `${qualityText}${bitrateText}${videoId ? ` #${videoId}` : ''}`
+    label.title = url
+    Object.assign(label.style, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '13px' })
+
+    const copyBtn = createButton('Copy', '#795548')
+    copyBtn.onclick = () => navigator.clipboard?.writeText(url).then(() => log('Copied video URL')).catch(() => prompt('Copy URL:', url))
+
+    const openBtn = createButton('Open', '#007bff')
+    openBtn.onclick = () => window.open(url, '_blank')
+
+    row.append(preview, label, copyBtn, openBtn)
+    links.appendChild(row)
+  }
+
+  function clearLinks() {
+    state.links.clear()
+    state.candidates.clear()
+    const links = document.getElementById(LINKS_ID)
+    if (links) links.textContent = ''
+    updateStatus('Cleared')
+    log('Cleared links')
+  }
+
+  function updateStatus(text) {
+    const status = document.getElementById(STATUS_ID)
+    if (status) status.textContent = text
+  }
+
+  function log(message, type = 'info') {
+    const timestamp = new Date().toLocaleTimeString()
+    const line = `[${timestamp}][${type}] ${message}`
+    state.logLines.push(line)
+    if (state.logLines.length > MAX_LOG_LINES) {
+      state.logLines.splice(0, state.logLines.length - MAX_LOG_LINES)
+    }
+    const info = document.getElementById(INFO_ID)
+    if (info) {
+      info.value = state.logLines.join('\n')
+      info.scrollTop = info.scrollHeight
+    }
+    if (type === 'error') console.error(line)
+  }
+
+  function makeDraggable(element, handle) {
+    let startX = 0, startY = 0, startTop = 0, startLeft = 0
+    handle.addEventListener('mousedown', (e) => {
+      if (e.target.tagName === 'BUTTON') return
+      e.preventDefault()
+      const rect = element.getBoundingClientRect()
+      startX = e.clientX
+      startY = e.clientY
+      startTop = rect.top
+      startLeft = rect.left
+      element.style.right = 'auto'
+      document.addEventListener('mousemove', onMove)
+      document.addEventListener('mouseup', onUp, { once: true })
+    })
+    function onMove(e) {
+      const top = Math.max(0, Math.min(window.innerHeight - element.offsetHeight, startTop + e.clientY - startY))
+      const left = Math.max(0, Math.min(window.innerWidth - element.offsetWidth, startLeft + e.clientX - startX))
+      element.style.top = `${top}px`
+      element.style.left = `${left}px`
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove)
+    }
+  }
+
+  init()
+})()

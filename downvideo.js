@@ -509,7 +509,8 @@
     }
     const clearBtn = createButton('Clear', '#f44336')
     clearBtn.onclick = clearLinks
-    header.append(scanBtn, autoBtn, clearBtn)
+    const toggleBtn = createButton('Collapse', '#455a64')
+    header.append(scanBtn, autoBtn, clearBtn, toggleBtn)
 
     const status = document.createElement('div')
     status.id = STATUS_ID
@@ -523,6 +524,16 @@
     const info = document.createElement('textarea')
     info.id = INFO_ID
     Object.assign(info.style, { width: '100%', height: '130px', boxSizing: 'border-box', border: '0', borderTop: '1px solid #eee', padding: '8px', fontSize: '12px', fontFamily: 'monospace', resize: 'vertical' })
+
+    let collapsed = false
+    toggleBtn.onclick = () => {
+      collapsed = !collapsed
+      status.style.display = collapsed ? 'none' : 'block'
+      links.style.display = collapsed ? 'none' : 'flex'
+      info.style.display = collapsed ? 'none' : 'block'
+      panel.style.width = collapsed ? '360px' : '500px'
+      toggleBtn.textContent = collapsed ? 'Expand' : 'Collapse'
+    }
 
     panel.append(header, status, links, info)
     document.body.appendChild(panel)

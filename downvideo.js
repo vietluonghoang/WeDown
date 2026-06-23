@@ -259,12 +259,12 @@
     for (const el of roots) {
       if (el.closest?.(`#${PANEL_ID}`)) continue
       const src = el.currentSrc || el.src || el.getAttribute?.('src') || el.getAttribute?.('data-video-url') || el.getAttribute?.('data-src')
-      if (src) addVideoCandidate(src, 'DOM')
+      const dataVideoId = el.getAttribute?.('data-video-id') || findNearbyVideoId(el)
+      if (src) addVideoCandidate(src, 'DOM', dataVideoId || '')
 
       const poster = el.getAttribute?.('poster')
       if (poster && poster.includes('fbcdn')) posters.add(cleanVideoUrl(poster))
 
-      const dataVideoId = el.getAttribute?.('data-video-id')
       if (dataVideoId && /^\d+$/.test(dataVideoId)) videoIds.add(dataVideoId)
 
       const href = el.href || el.getAttribute?.('href') || ''
@@ -277,6 +277,16 @@
       const videoId = thumbKey ? NetCapture.thumbToVideoId.get(thumbKey) : null
       if (videoId) videoIds.add(videoId)
     }
+  }
+
+  function findNearbyVideoId(el) {
+    const root = el.closest?.('[data-video-id], div[role="article"], [data-pagelet], [role="main"]')
+    const idEl = root?.matches?.('[data-video-id]') ? root : root?.querySelector?.('[data-video-id]')
+    const dataId = idEl?.getAttribute?.('data-video-id')
+    if (dataId && /^\d+$/.test(dataId)) return dataId
+    const link = root?.querySelector?.('a[href*="/reel/"], a[href*="/videos/"], a[href*="/watch"]')
+    const href = link?.href || ''
+    return (/\/videos\/[^/]*\/(\d+)/.exec(href) || /\/videos\/(\d+)/.exec(href) || /\/reel\/(\d+)/.exec(href) || /[?&]v=(\d+)/.exec(href))?.[1] || ''
   }
 
   function scanFiber(videoIds) {
@@ -399,6 +409,12 @@
 
   function selectBestQualityVideos(urls) {
     if (urls.length <= 1) return urls
+    const withKnownQuality = urls.filter((url) => hasKnownQuality(state.candidates.get(url)))
+    if (withKnownQuality.length > 0) {
+      const removed = urls.length - withKnownQuality.length
+      if (removed > 0) log(`Filtered ${removed} unknown DOM duplicate candidate(s)`, 'debug')
+      urls = withKnownQuality
+    }
     const groups = new Map()
     for (const url of urls) {
       const score = state.candidates.get(url)?.score || getVideoScore(url)
@@ -418,6 +434,12 @@
       result.push(usable[0].url)
     }
     return result
+  }
+
+  function hasKnownQuality(meta) {
+    if (!meta) return false
+    if (meta.quality && meta.quality !== 'DOM') return true
+    return Boolean(meta.score?.assetId || meta.score?.tag || meta.score?.resolution || meta.score?.bitrate || meta.videoId)
   }
 
   function isValidVideoUrl(url) {
@@ -520,6 +542,9 @@
     const row = document.createElement('div')
     Object.assign(row.style, { display: 'grid', gridTemplateColumns: '150px 1fr auto auto', gap: '8px', alignItems: 'center', padding: '8px', background: '#f5f5f5', borderRadius: '5px' })
 
+    const previewWrap = document.createElement('div')
+    Object.assign(previewWrap.style, { width: '150px', display: 'flex', flexDirection: 'column', gap: '4px' })
+
     const preview = document.createElement('video')
     preview.src = url
     preview.controls = true
@@ -532,6 +557,17 @@
       Object.assign(fallback.style, { width: '150px', height: '84px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#ffebee', color: '#b71c1c', borderRadius: '4px', fontSize: '12px', textAlign: 'center' })
       preview.replaceWith(fallback)
     }, { once: true })
+
+    const meta = document.createElement('div')
+    const sizeText = getSizeTextFromUrl(url)
+    meta.textContent = formatPreviewMeta(score, sizeText)
+    Object.assign(meta.style, { color: '#555', fontSize: '11px', lineHeight: '1.25', wordBreak: 'break-word' })
+    preview.addEventListener('loadedmetadata', () => {
+      const dimensionText = preview.videoWidth && preview.videoHeight ? `${preview.videoWidth}x${preview.videoHeight}` : ''
+      meta.textContent = formatPreviewMeta(score, sizeText, dimensionText)
+    }, { once: true })
+
+    previewWrap.append(preview, meta)
 
     const label = document.createElement('div')
     const qualityText = score.resolution ? `${score.resolution}p` : quality
@@ -546,8 +582,34 @@
     const openBtn = createButton('Open', '#007bff')
     openBtn.onclick = () => window.open(url, '_blank')
 
-    row.append(preview, label, copyBtn, openBtn)
+    row.append(previewWrap, label, copyBtn, openBtn)
     links.appendChild(row)
+  }
+
+  function formatPreviewMeta(score = {}, sizeText = '', dimensionText = '') {
+    const bitrateText = score.bitrate ? `${Math.round(score.bitrate / 1000)}kbps` : 'bitrate: unknown'
+    const size = sizeText || 'size: unknown'
+    return [dimensionText, bitrateText, size].filter(Boolean).join(' • ')
+  }
+
+  function getSizeTextFromUrl(url) {
+    const start = Number(/[?&]bytestart=(\d+)/.exec(url)?.[1])
+    const end = Number(/[?&]byteend=(\d+)/.exec(url)?.[1])
+    if (Number.isFinite(start) && Number.isFinite(end) && end >= start) return formatBytes(end - start + 1)
+    const size = Number(/[?&](?:size|filesize|file_size)=(\d+)/i.exec(url)?.[1])
+    return Number.isFinite(size) && size > 0 ? formatBytes(size) : ''
+  }
+
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return ''
+    const units = ['B', 'KB', 'MB', 'GB']
+    let size = bytes
+    let unit = 0
+    while (size >= 1024 && unit < units.length - 1) {
+      size /= 1024
+      unit++
+    }
+    return `${size.toFixed(size >= 10 || unit === 0 ? 0 : 1)}${units[unit]}`
   }
 
   function clearLinks() {

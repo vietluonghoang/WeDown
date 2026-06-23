@@ -519,7 +519,11 @@
 
     const links = document.createElement('div')
     links.id = LINKS_ID
-    Object.assign(links.style, { maxHeight: '45vh', overflowY: 'auto', padding: '8px', display: 'flex', flexDirection: 'column', gap: '8px' })
+    Object.assign(links.style, { height: '45vh', minHeight: '120px', maxHeight: '70vh', overflowY: 'auto', padding: '8px', display: 'flex', flexDirection: 'column', gap: '8px' })
+
+    const resizeHandle = document.createElement('div')
+    resizeHandle.title = 'Drag to resize video list'
+    Object.assign(resizeHandle.style, { height: '8px', cursor: 'ns-resize', background: 'linear-gradient(to bottom, #eee, #ddd)', borderTop: '1px solid #ddd', borderBottom: '1px solid #ccc' })
 
     const info = document.createElement('textarea')
     info.id = INFO_ID
@@ -530,14 +534,35 @@
       collapsed = !collapsed
       status.style.display = collapsed ? 'none' : 'block'
       links.style.display = collapsed ? 'none' : 'flex'
+      resizeHandle.style.display = collapsed ? 'none' : 'block'
       info.style.display = collapsed ? 'none' : 'block'
       panel.style.width = collapsed ? '360px' : '500px'
       toggleBtn.textContent = collapsed ? 'Expand' : 'Collapse'
     }
 
-    panel.append(header, status, links, info)
+    makeListResizable(links, resizeHandle)
+    panel.append(header, status, links, resizeHandle, info)
     document.body.appendChild(panel)
     makeDraggable(panel, header)
+  }
+
+  function makeListResizable(listEl, handleEl) {
+    let startY = 0
+    let startHeight = 0
+    handleEl.addEventListener('mousedown', (e) => {
+      e.preventDefault()
+      startY = e.clientY
+      startHeight = listEl.getBoundingClientRect().height
+      document.addEventListener('mousemove', onMove)
+      document.addEventListener('mouseup', onUp, { once: true })
+    })
+    function onMove(e) {
+      const nextHeight = Math.max(120, Math.min(window.innerHeight * 0.75, startHeight + e.clientY - startY))
+      listEl.style.height = `${nextHeight}px`
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove)
+    }
   }
 
   function createButton(text, color) {

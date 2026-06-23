@@ -479,12 +479,14 @@
       right: '20px',
       width: '500px',
       maxHeight: '85vh',
+      display: 'flex',
+      flexDirection: 'column',
       zIndex: '999999',
       background: '#fff',
       borderRadius: '8px',
       boxShadow: '0 4px 20px rgba(0,0,0,.18)',
       fontFamily: 'Arial, sans-serif',
-      overflow: 'hidden',
+      overflow: 'visible',
     })
 
     const header = document.createElement('div')
@@ -519,7 +521,7 @@
 
     const links = document.createElement('div')
     links.id = LINKS_ID
-    Object.assign(links.style, { height: '45vh', minHeight: '120px', maxHeight: '70vh', overflowY: 'auto', padding: '8px', display: 'flex', flexDirection: 'column', gap: '8px' })
+    Object.assign(links.style, { height: '45vh', minHeight: '120px', overflowY: 'auto', padding: '8px', display: 'flex', flexDirection: 'column', gap: '8px' })
 
     const resizeHandle = document.createElement('div')
     resizeHandle.title = 'Drag to resize video list'
@@ -557,7 +559,13 @@
       document.addEventListener('mouseup', onUp, { once: true })
     })
     function onMove(e) {
-      const nextHeight = Math.max(120, Math.min(window.innerHeight * 0.75, startHeight + e.clientY - startY))
+      const panel = listEl.closest(`#${PANEL_ID}`)
+      const panelTop = panel?.getBoundingClientRect().top || 0
+      const reservedHeight = [...panel.children]
+        .filter((child) => child !== listEl && getComputedStyle(child).display !== 'none')
+        .reduce((sum, child) => sum + child.getBoundingClientRect().height, 0)
+      const maxHeight = Math.max(120, window.innerHeight - panelTop - reservedHeight - 20)
+      const nextHeight = Math.max(120, Math.min(maxHeight, startHeight + e.clientY - startY))
       listEl.style.height = `${nextHeight}px`
     }
     function onUp() {

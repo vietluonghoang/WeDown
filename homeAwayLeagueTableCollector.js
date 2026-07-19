@@ -219,6 +219,173 @@
       return match ? match[1] : ''
     }
 
+    // ==================== LEAGUE ID / METADATA HELPERS ====================
+    /**
+     * Lấy ID mùa hiện tại do FootyStats gán trong script ẩn:
+     *   <script>var isLeague = true;var zzz = 'detailed-stats';var z = '16841'; var zzzz = 'xg';</script>
+     * Nguồn đáng tin cậy nhất vì đây là ID mà trang web dùng nội bộ cho mùa hiện tại.
+     * @param {Document} [doc=document]
+     * @returns {string}
+     */
+    function getCurrentLeagueId(doc = document) {
+      if (typeof window.z !== 'undefined' && window.z != null && String(window.z).trim()) {
+        return String(window.z).trim()
+      }
+      const scripts = doc.querySelectorAll('script:not([src])')
+      for (const s of Array.from(scripts)) {
+        const m = s.textContent.match(/var\s+z\s*=\s*['"]?(\d+)['"]?/)
+        if (m) return m[1]
+      }
+      return ''
+    }
+
+    /**
+     * Slug giải ổn định xuyên mùa (không phụ thuộc locale/năm).
+     * Ví dụ: "lithuania/1-lyga" cho trang /vn/lithuania/1-lyga/xg.
+     * Ưu tiên <link rel="canonical">, fallback về pathname hiện tại.
+     * @param {Document} [doc=document]
+     * @returns {string}
+     */
+    function getLeagueSlug(doc = document) {
+      const extract = (path) => {
+        if (!path) return ''
+        const parts = path.replace(/^\/+/, '').split('/').filter(Boolean)
+        if (parts.length >= 3) return parts[1] + '/' + parts[2]
+        return ''
+      }
+      const canonical = doc.querySelector('link[rel="canonical"]')?.getAttribute('href') || ''
+      if (canonical) {
+        try {
+          return extract(new URL(canonical, window.location.href).pathname)
+        } catch (_) {}
+      }
+      return extract(window.location.pathname)
+    }
+
+    /**
+     * Tên hiển thị của giải (ví dụ "1 Lyga"), lấy từ thuộc tính alt của logo teamCrest
+     * hoặc từ breadcrumb li.league.
+     * @param {Document} [doc=document]
+     * @returns {string}
+     */
+    function getLeagueName(doc = document) {
+      const crest = doc.querySelector('#teamSummary .teamCrest')
+      const alt = crest?.getAttribute('alt') || ''
+      const fromAlt = alt.replace(/\s+Logo\s*$/i, '').trim()
+      if (fromAlt) return fromAlt
+      const li = doc.querySelector('#pageCategory li.league [itemprop="name"]')
+      return getCellText(li)
+    }
+
+    /**
+     * Trả về { name, slug } của quốc gia chứa giải, dựa vào dòng "Quốc gia" trong #teamSummary.
+     * @param {Document} [doc=document]
+     * @returns {{name:string, slug:string}}
+     */
+    function getNation(doc = document) {
+      const details = doc.querySelectorAll('#teamSummary .league-details .detail')
+      for (const d of Array.from(details)) {
+        const label = getCellText(d.querySelector('.w35'))
+        if (label.trim() === 'Quốc gia') {
+          const a = d.querySelector('a[href]')
+          const href = a?.getAttribute('href') || ''
+          const slug = href.split('/').filter(Boolean).pop() || ''
+          return { name: getCellText(a), slug }
+        }
+      }
+      return { name: '', slug: '' }
+    }
+
+    /**
+     * Năm của mùa hiện tại (text trước nút caret-down trong .drop-down-parent).
+     * @param {Document} [doc=document]
+     * @returns {string}
+     */
+    function getCurrentSeasonYear(doc = document) {
+      const dd = doc.querySelector('#teamSummary .drop-down-parent')
+      const txt = getDirectText(dd)
+      const m = txt.match(/\d{4}/)
+      return m ? m[0] : ''
+    }
+
+    /**
+     * Liệt kê các mùa có thể chuyển sang (mùa quá khứ): [{ year, id }] với id = data-z.
+     * @param {Document} [doc=document]
+     * @returns {Array<{year:string, id:string}>}
+     */
+    function getPastSeasonIds(doc = document) {
+      const out = []
+      doc.querySelectorAll('.changeLeagueDataButton').forEach((b) => {
+        const year = b.getAttribute('data-hash') || ''
+        const id = b.getAttribute('data-z') || ''
+        if (year && id) out.push({ year, id })
+      })
+      return out
+    }
+
+    /**
+     * Lấy ID (data-z) của một mùa cụ thể trong quá khứ.
+     * @param {string|number} year
+     * @param {Document} [doc=document]
+     * @returns {string}
+     */
+    function getSeasonLeagueId(year, doc = document) {
+      const b = doc.querySelector('.changeLeagueDataButton[data-hash="' + year + '"]')
+      return b?.getAttribute('data-z') || ''
+    }
+
+    /**
+     * Tổng hợp toàn bộ thông số nhận diện giải trên trang hiện tại.
+     * @param {Document} [doc=document]
+     * @returns {Object}
+     */
+    function getLeagueInfo(doc = document) {
+      const nation = getNation(doc)
+      const past = getPastSeasonIds(doc)
+      return {
+        currentSeasonId: getCurrentLeagueId(doc),
+        slug: getLeagueSlug(doc),
+        leagueName: getLeagueName(doc),
+        nation: nation.name,
+        nationSlug: nation.slug,
+        seasonYear: getCurrentSeasonYear(doc),
+        pastSeasons: past,
+        page: window.location.pathname,
+        url: window.location.href,
+      }
+    }
+
+    /**
+     * Cập nhật thanh thông tin giải (league-info bar) với dữ liệu từ trang hiện tại.
+ * Ghi log tổng quan vào logArea để người dùng theo dõi qua các trang đang scan.
+     */
+    function updateLeagueInfoBar(doc = document) {
+      try {
+        const info = getLeagueInfo(doc)
+        window.homeAwayTableCollectorLeagueInfo = info
+        const el = window.csvCollectorLeagueInfoText
+        if (el) {
+          const seasonPart = info.seasonYear ? ` ${info.seasonYear}` : ''
+          const nationPart = info.nation ? ` (${info.nation})` : ''
+          const pastCount = info.pastSeasons.length
+          const summary =
+            `z=${info.currentSeasonId || '?'} | ${info.slug || '?'} | ` +
+            `${info.leagueName || '?'}${nationPart}${seasonPart} | ${pastCount} mùa cũ`
+          el.textContent = `League info: ${summary}`
+          el.title = JSON.stringify(info, null, 2)
+        }
+        if (info.currentSeasonId || info.slug) {
+          window.logToPopup(
+            `League: z=${info.currentSeasonId || '?'} | slug=${info.slug || '?'} | ` +
+            `${info.leagueName || '?'} (${info.nation || '?'}) ${info.seasonYear || '?'} | ` +
+            `${info.pastSeasons.length} mùa cũ`
+          )
+        }
+      } catch (error) {
+        console.error('Home/Away Table Collector: Error in updateLeagueInfoBar:', error)
+      }
+    }
+
     function findNearestPreviousH2(node, root) {
       let current = node
       while (current && current !== root) {
@@ -271,7 +438,13 @@
       const selected = settings.visibleColumns.filter((key) =>
         allKeys.includes(key)
       )
-      return selected.length ? selected : allKeys
+      // Luôn giữ các cột required (fixed) kể cả khi settings đã lưu cũ không chứa key.
+      // Tránh thêm cột mới (vd. league-id, team-id) bị lọc mất do localStorage cũ.
+      const requiredKeys = columnMeta
+        .filter((column) => column.required)
+        .map((column) => column.key)
+      const merged = new Set([...selected, ...requiredKeys])
+      return merged.size ? Array.from(merged) : allKeys
     }
 
     function filterExtractedDataColumns(data) {
@@ -302,6 +475,29 @@
         }
       })
       return groups
+    }
+
+    /**
+     * Thêm cột "League ID" (giá trị z của mùa hiện tại) vào đầu kết quả extractor,
+     * nằm bên trái cột Team ID. Bỏ qua nếu kết quả là hàng lỗi (headers[0] === 'Status').
+     * @param {Array} result - Kết quả trả về từ extractor (headers + rows + columnMeta).
+     * @param {Document} [doc=document]
+     * @returns {Array}
+     */
+    function prependLeagueIdColumn(result, doc = document) {
+      const headers = result && result[0]
+      if (!Array.isArray(headers) || headers[0] === 'Status') return result
+      const leagueId = getCurrentLeagueId(doc)
+      const newHeaders = ['League ID', ...headers]
+      const newColumnMeta = [
+        { key: 'league-id', groupTitle: '', header: 'League ID', required: true },
+        ...(Array.isArray(result.columnMeta) ? result.columnMeta : []),
+      ]
+      const newRows = result.slice(1).map((row) => [leagueId, ...row])
+      const newResult = [newHeaders, ...newRows]
+      newResult.columnMeta = newColumnMeta
+      newResult.headerGroups = buildHeaderGroups(newColumnMeta)
+      return newResult
     }
 
     function extractRowsFromTable(table) {
@@ -431,7 +627,7 @@
       const result = [headers, ...rows]
       result.columnMeta = columnMeta
       result.headerGroups = buildHeaderGroups(columnMeta)
-      return result
+      return prependLeagueIdColumn(result, doc)
     }
 
     function extractOver25GoalsTableData(doc = document) {
@@ -517,7 +713,7 @@
       const result = [headers, ...rows]
       result.columnMeta = columnMeta
       result.headerGroups = buildHeaderGroups(columnMeta)
-      return result
+      return prependLeagueIdColumn(result, doc)
     }
 
     function extractXgData(doc = document) {
@@ -596,7 +792,7 @@
       const result = [headers, ...rows]
       result.columnMeta = columnMeta
       result.headerGroups = buildHeaderGroups(columnMeta)
-      return result
+      return prependLeagueIdColumn(result, doc)
     }
 
     const PAGE_EXTRACTORS = [
@@ -844,6 +1040,8 @@
       try {
         state.isRefreshing = true
         window.logToPopup('Refreshing data from current page...')
+
+        updateLeagueInfoBar(document)
 
         const rawPageData = extractCurrentPageData(document)
         window.homeAwayTableCollectorRawData = rawPageData
@@ -1574,6 +1772,52 @@
       const table = createTable()
       mainContent.appendChild(table)
 
+      // League info bar (non-scrolling, above the table) — shows IDs/metadata of the league
+      // currently being scanned, so the user can verify which signal is reliable across pages.
+      const leagueInfoBar = document.createElement('div')
+      leagueInfoBar.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
+        background: #fff7e0;
+        border-bottom: 1px solid ${CONSTANTS.COLORS.BORDER};
+        font-size: 11px;
+        color: #333;
+        user-select: text;
+        flex-shrink: 0;
+        flex-wrap: wrap;
+      `
+      const leagueInfoText = document.createElement('span')
+      leagueInfoText.style.cssText = 'flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'
+      leagueInfoText.textContent = 'League info: (chưa quét)'
+      leagueInfoText.title = 'Thông số nhận diện giải sẽ hiển thị ở đây sau khi quét'
+      const leagueInfoCopyBtn = document.createElement('button')
+      leagueInfoCopyBtn.textContent = '📋'
+      leagueInfoCopyBtn.title = 'Sao chép JSON thông tin giải'
+      leagueInfoCopyBtn.style.cssText =
+        'background: none; border: 1px solid #ccc; cursor: pointer; font-size: 12px; padding: 1px 4px; border-radius: 3px; flex-shrink: 0;'
+      leagueInfoCopyBtn.addEventListener('click', () => {
+        const info = window.homeAwayTableCollectorLeagueInfo
+        if (!info) return
+        const json = JSON.stringify(info, null, 2)
+        try {
+          navigator.clipboard.writeText(json).then(
+            () => window.logToPopup('League info JSON copied to clipboard.'),
+            () => {
+              console.log(json)
+              window.logToPopup('Clipboard write failed; JSON logged instead.')
+            }
+          )
+        } catch (_) {
+          console.log(json)
+          window.logToPopup('Clipboard unavailable; JSON logged to console.')
+        }
+      })
+      leagueInfoBar.appendChild(leagueInfoText)
+      leagueInfoBar.appendChild(leagueInfoCopyBtn)
+      window.csvCollectorLeagueInfoText = leagueInfoText
+
       // Controls bar between table and log (checkbox + gripper for resize)
       const controlsBar = document.createElement('div')
       controlsBar.style.cssText = `
@@ -1664,6 +1908,8 @@
       contentWrapper.appendChild(mainContent)
       contentWrapper.appendChild(controlsBar)
       contentWrapper.appendChild(logArea)
+
+      contentWrapper.insertBefore(leagueInfoBar, mainContent)
 
       const resizeHandle = document.createElement('div')
       resizeHandle.style.cssText = `position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: se-resize; z-index: 1; background: linear-gradient(135deg, transparent 50%, rgba(0,0,0,0.25) 50%);`

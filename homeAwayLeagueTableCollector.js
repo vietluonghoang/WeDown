@@ -574,7 +574,9 @@
 
           const bubble = item.querySelector('.small-bubble')
           const unit = getCellText(bubble?.querySelector('span'))
-          const score = getDirectText(bubble) || getCellText(bubble).replace(unit, '').trim()
+          // Chuẩn hóa dấu thập phân: chuyển "x.y" -> "x,y" cho chỉ số xG/xGA
+          const rawScore = getDirectText(bubble) || getCellText(bubble).replace(unit, '').trim()
+          const score = rawScore.replace(/(\d)\.(\d)/g, '$1,$2')
           const values = [getCellText(teamLink), score]
           values.forEach((value, index) => {
             row[sectionStartIndex + index] = value

@@ -65,7 +65,41 @@
 
     // ==================== SETTINGS (USER CONFIG) ====================
     const SETTINGS_STORAGE_KEY = 'home_away_table_collector_settings_v1'
+    const PAGE_SETTING_KEYS = {
+      HOME_AWAY: 'home-away-league-table',
+      OVER_25: 'over-25-goals-table',
+      XG: 'xg',
+    }
     const settings = loadSettings()
+
+    function getCurrentPageSettingsKey(path = window.location.pathname) {
+      if (path.includes('/home-away-league-table')) {
+        return PAGE_SETTING_KEYS.HOME_AWAY
+      }
+      if (path.includes('/over-25-goals-table')) {
+        return PAGE_SETTING_KEYS.OVER_25
+      }
+      if (path.endsWith('/xg')) {
+        return PAGE_SETTING_KEYS.XG
+      }
+      return 'unknown'
+    }
+
+    function normalizeStringArray(value) {
+      return Array.isArray(value)
+        ? value.filter((item) => typeof item === 'string')
+        : null
+    }
+
+    function normalizeVisibleColumnsByPage(value) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+
+      return Object.fromEntries(
+        Object.entries(value)
+          .map(([pageKey, columns]) => [pageKey, normalizeStringArray(columns)])
+          .filter(([, columns]) => Array.isArray(columns))
+      )
+    }
 
     function loadSettings() {
       try {
@@ -94,9 +128,9 @@
             Number(parsed.dataFoundInterval) > 0
               ? Number(parsed.dataFoundInterval)
               : CONSTANTS.REFRESH.DATA_FOUND_INTERVAL,
-          visibleColumns: Array.isArray(parsed.visibleColumns)
-            ? parsed.visibleColumns.filter((value) => typeof value === 'string')
-            : null,
+          visibleColumnsByPage: normalizeVisibleColumnsByPage(
+            parsed.visibleColumnsByPage
+          ),
 
         }
       } catch (_) {
@@ -104,7 +138,7 @@
           defaultInterval: CONSTANTS.REFRESH.DEFAULT_INTERVAL,
           noDataInterval: CONSTANTS.REFRESH.NO_DATA_INTERVAL,
           dataFoundInterval: CONSTANTS.REFRESH.DATA_FOUND_INTERVAL,
-          visibleColumns: null,
+          visibleColumnsByPage: {},
 
         }
       }
@@ -431,11 +465,30 @@
       return getCellText(cell)
     }
 
+    function makePageColumnKey(pageKey, sectionIndex, columnIndex) {
+      return `${pageKey}:${sectionIndex}:${columnIndex}`
+    }
+
+    function getCurrentPageVisibleColumns() {
+      const pageKey = getCurrentPageSettingsKey()
+      const columns = settings.visibleColumnsByPage?.[pageKey]
+      return Array.isArray(columns) ? columns : null
+    }
+
+    function setCurrentPageVisibleColumns(columns) {
+      const pageKey = getCurrentPageSettingsKey()
+      settings.visibleColumnsByPage = {
+        ...(settings.visibleColumnsByPage || {}),
+        [pageKey]: normalizeStringArray(columns) || [],
+      }
+    }
+
     function getVisibleColumnKeys(columnMeta = []) {
       const allKeys = columnMeta.map((column) => column.key)
-      if (!Array.isArray(settings.visibleColumns)) return allKeys
+      const visibleColumns = getCurrentPageVisibleColumns()
+      if (!Array.isArray(visibleColumns)) return allKeys
 
-      const selected = settings.visibleColumns.filter((key) =>
+      const selected = visibleColumns.filter((key) =>
         allKeys.includes(key)
       )
       // Luôn giữ các cột required (fixed) kể cả khi settings đã lưu cũ không chứa key.
@@ -532,6 +585,7 @@
 
     // Trích xuất dữ liệu từ các bảng full-league-table, nối ngang theo data-team-id.
     function extractHomeAwayLeagueTableData(doc = document) {
+      const pageKey = PAGE_SETTING_KEYS.HOME_AWAY
       const tables = evaluateXPathNodes(
         "//table[contains(@class,'full-league-table')]",
         doc
@@ -589,7 +643,7 @@
         headers.push(...sectionHeaders)
         sectionHeaders.forEach((header, columnIndex) => {
           columnMeta.push({
-            key: `${sectionIndex}:${columnIndex}`,
+            key: makePageColumnKey(pageKey, sectionIndex, columnIndex),
             groupTitle: title,
             header,
             required: sectionIndex === 0 && columnIndex === 0,
@@ -631,6 +685,7 @@
     }
 
     function extractOver25GoalsTableData(doc = document) {
+      const pageKey = PAGE_SETTING_KEYS.OVER_25
       const tables = evaluateXPathNodes(
         "//table[contains(@class,'full-league-table')]",
         doc
@@ -655,7 +710,7 @@
         headers.push(...sectionHeaders)
         sectionHeaders.forEach((header, columnIndex) => {
           columnMeta.push({
-            key: `${sectionIndex}:${columnIndex}`,
+            key: makePageColumnKey(pageKey, sectionIndex, columnIndex),
             groupTitle: title,
             header,
             required: sectionIndex === 0 && columnIndex === 0,
@@ -717,6 +772,7 @@
     }
 
     function extractXgData(doc = document) {
+      const pageKey = PAGE_SETTING_KEYS.XG
       const lists = evaluateXPathNodes(
         "//div[@class='ui-row cf']/div[contains(@class,'ui-col third')]/ul",
         doc
@@ -741,7 +797,7 @@
         headers.push(...sectionHeaders)
         sectionHeaders.forEach((header, columnIndex) => {
           columnMeta.push({
-            key: `${sectionIndex}:${columnIndex}`,
+            key: makePageColumnKey(pageKey, sectionIndex, columnIndex),
             groupTitle: title,
             header,
             required: sectionIndex === 0 && columnIndex === 0,
@@ -1628,8 +1684,6 @@
       })
       panel._buttons.cancel.addEventListener('click', close)
       panel._buttons.selectAll.addEventListener('click', () => {
-        settings.visibleColumns = null
-        updateColumnSettingsPanel(window.homeAwayTableCollectorRawData)
         panel._columnList
           .querySelectorAll("input[type='checkbox']")
           .forEach((checkbox) => {
@@ -1657,7 +1711,7 @@
           panel._columnList.querySelectorAll("input[type='checkbox']:checked")
         ).map((checkbox) => checkbox.value)
         if (panel._columnList.querySelectorAll("input[type='checkbox']").length) {
-          settings.visibleColumns = selectedColumns
+          setCurrentPageVisibleColumns(selectedColumns)
         }
 
         saveSettings(settings)
